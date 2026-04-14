@@ -4,7 +4,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /absolute/path/to/token-never-sleeps/scripts/tns_runner.py run --config /absolute/path/to/tns.config.json
+ExecStart=/usr/bin/python3 /absolute/path/to/token-never-sleeps/scripts/tns_runner.py run --config /absolute/path/to/tns_config.json
 Restart=always
 RestartSec=15
 

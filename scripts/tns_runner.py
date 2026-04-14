@@ -334,6 +334,13 @@ def load_manifest(paths: Dict[str, Path]) -> Dict[str, Any]:
     return manifest
 
 
+def ensure_initialized(config: Dict[str, Any]) -> Dict[str, Path]:
+    paths = state_paths(config)
+    if not paths["manifest"].exists():
+        init_state(config)
+    return paths
+
+
 def refresh_window_seconds(manifest: Dict[str, Any]) -> int:
     if manifest.get("refresh_seconds") is not None:
         return int(manifest["refresh_seconds"])
@@ -1076,7 +1083,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
-    paths = state_paths(config)
+    paths = ensure_initialized(config)
     manifest = load_manifest(paths)
     maybe_unfreeze(paths, manifest)
     artifacts = rebuild_artifact_index(paths)
@@ -1102,7 +1109,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
-    paths = state_paths(config)
+    paths = ensure_initialized(config)
     load_manifest(paths)
     interval = int(args.poll_seconds)
     success_interval = int(config.get("success_interval_seconds", 1))
