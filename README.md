@@ -67,13 +67,13 @@ Task 2 ...
 ### 3. Check status inside Claude
 
 ```text
-/tns-status --config /absolute/path/to/your/project/tns_config.json
+/tns-status --config tns_config.json
 ```
 
 ### 4. Start TNS inside Claude
 
 ```text
-/tns-start run --config /absolute/path/to/your/project/tns_config.json
+/tns-start run --config tns_config.json
 ```
 
 
