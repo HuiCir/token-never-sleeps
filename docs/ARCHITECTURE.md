@@ -11,6 +11,7 @@ Token Never Sleeps 由两层组成：
    - `scripts/tns_runner.py` 负责真正的长程自动化。
    - 维护 `.tns/` 状态文件。
    - 按 5 小时窗口做 refresh。
+   - 可选接入 tmux，给 runner、hook 和多任务并行预留稳定的 session 容器。
    - 选择未完成 section。
    - 调用 executor。
    - 在 clean state 后调用 verifier。

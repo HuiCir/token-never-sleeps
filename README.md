@@ -41,14 +41,12 @@ claude plugin validate ~/.claude/plugins/local/token-never-sleeps
 
 `tns_config.json`
 
-Full Config Template See [examples/tns_config.json](examples/tns_config.json).
+Full config template: [examples/tns_config.json](examples/tns_config.json).
+The template includes required fields, defaulted optional fields, and advanced beta options such as `tmux`, quota policies, notifications, and git controls.
 
 ```json
 {
-  "workspace": "/absolute/path/to/project",
-  "product_doc": "/absolute/path/to/project/task.md",
-  "refresh_hours": 5,
-  "effort": "high",
+  "workspace": "/absolute/path/to/project"
 }
 ```
 
@@ -75,5 +73,3 @@ Task 2 ...
 ```text
 /tns-start run --config tns_config.json
 ```
-
-

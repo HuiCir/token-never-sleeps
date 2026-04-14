@@ -14,6 +14,8 @@ TNS 在目标工作区创建 `.tns/`，核心文件如下：
   - runner 的结构化事件流。
 - `artifacts.json`
   - section 到产物文件的索引。
+- `tmux.json`
+  - tmux session 元数据与最近一次刷新状态。
 - `hook-events.jsonl`
   - 插件 stop hook 观察到的会话退出事件。
 - `freeze.json`

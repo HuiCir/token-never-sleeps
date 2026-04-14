@@ -26,6 +26,13 @@
     "freeze_on_unknown": false,
     "command": ""
   },
+  "tmux": {
+    "enabled": false,
+    "auto_create": true,
+    "session_name": "",
+    "window_name": "tns",
+    "socket_name": ""
+  },
   "notifications": {
     "email": {
       "enabled": false,

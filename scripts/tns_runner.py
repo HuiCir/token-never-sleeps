@@ -49,6 +49,13 @@ def require_claude() -> str:
     return claude
 
 
+def require_tmux() -> str:
+    tmux = shutil.which("tmux")
+    if not tmux:
+        raise RuntimeError("tmux not found in PATH")
+    return tmux
+
+
 def git_run(workspace: Path, args: List[str], check: bool = True) -> subprocess.CompletedProcess:
     proc = subprocess.run(["git", *args], cwd=str(workspace), capture_output=True, text=True)
     if check and proc.returncode != 0:
@@ -120,6 +127,17 @@ def notification_settings(config: Dict[str, Any]) -> Dict[str, Any]:
         "from": str(cfg.get("from", "tns@localhost")),
         "subject_prefix": str(cfg.get("subject_prefix", "[TNS]")),
         "smtp": cfg.get("smtp", {}),
+    }
+
+
+def tmux_settings(config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = config.get("tmux", {})
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "auto_create": bool(cfg.get("auto_create", True)),
+        "session_name": str(cfg.get("session_name", "")),
+        "window_name": str(cfg.get("window_name", "tns")),
+        "socket_name": str(cfg.get("socket_name", "")),
     }
 
 
@@ -245,11 +263,17 @@ def state_paths(config: Dict[str, Any]) -> Dict[str, Path]:
         "freeze": state_dir / "freeze.json",
         "activity": state_dir / "activity.jsonl",
         "artifacts": state_dir / "artifacts.json",
+        "tmux": state_dir / "tmux.json",
     }
 
 
 def iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
+
+
+def slugify(value: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", value).strip("-").lower()
+    return slug or "tns"
 
 
 def parse_sections(product_doc: Path) -> List[Dict[str, Any]]:
@@ -324,6 +348,7 @@ def init_state(config: Dict[str, Any]) -> None:
             encoding="utf-8",
         )
     ensure_git_ready(config, paths)
+    ensure_tmux_ready(config, paths)
     append_jsonl(paths["activity"], {"event": "init", "at": iso(started_at), "sections": len(sections)})
 
 
@@ -378,6 +403,80 @@ def ensure_git_ready(config: Dict[str, Any], paths: Dict[str, Path]) -> None:
         git_run(workspace, ["checkout", default_branch])
     if not git_run(workspace, ["rev-parse", "--verify", "HEAD"], check=False).stdout.strip():
         git_commit_all(workspace, "tns: initial workspace snapshot")
+
+
+def tmux_cmd(config: Dict[str, Any]) -> List[str]:
+    cmd = [require_tmux()]
+    socket_name = tmux_settings(config)["socket_name"]
+    if socket_name:
+        cmd.extend(["-L", socket_name])
+    return cmd
+
+
+def tmux_session_name(config: Dict[str, Any], paths: Dict[str, Path]) -> str:
+    settings = tmux_settings(config)
+    if settings["session_name"]:
+        return settings["session_name"]
+    workspace_name = slugify(paths["workspace"].name)
+    return f"tns-{workspace_name}"
+
+
+def tmux_has_session(config: Dict[str, Any], session_name: str, workspace: Path) -> bool:
+    proc = subprocess.run(
+        [*tmux_cmd(config), "has-session", "-t", session_name],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0
+
+
+def ensure_tmux_ready(config: Dict[str, Any], paths: Dict[str, Path]) -> None:
+    settings = tmux_settings(config)
+    if not settings["enabled"]:
+        return
+    session_name = tmux_session_name(config, paths)
+    window_name = settings["window_name"]
+    if not tmux_has_session(config, session_name, paths["workspace"]):
+        if not settings["auto_create"]:
+            raise RuntimeError(f"tmux session does not exist: {session_name}")
+        subprocess.run(
+            [*tmux_cmd(config), "new-session", "-d", "-s", session_name, "-n", window_name, "-c", str(paths["workspace"])],
+            check=True,
+            cwd=str(paths["workspace"]),
+            capture_output=True,
+            text=True,
+        )
+        append_jsonl(paths["activity"], {"event": "tmux_session_created", "at": iso(utc_now()), "session": session_name})
+    payload = {
+        "enabled": True,
+        "session_name": session_name,
+        "window_name": window_name,
+        "socket_name": settings["socket_name"] or None,
+        "workspace": str(paths["workspace"]),
+        "updated_at": iso(utc_now()),
+    }
+    write_json(paths["tmux"], payload)
+
+
+def tmux_status(config: Dict[str, Any], paths: Dict[str, Path]) -> Dict[str, Any]:
+    settings = tmux_settings(config)
+    if not settings["enabled"]:
+        return {"enabled": False}
+    ensure_tmux_ready(config, paths)
+    session_name = tmux_session_name(config, paths)
+    proc = subprocess.run(
+        [*tmux_cmd(config), "list-windows", "-t", session_name, "-F", "#{window_index}:#{window_name}:#{window_active}"],
+        cwd=str(paths["workspace"]),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    windows = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    payload = read_json(paths["tmux"], {})
+    payload["windows"] = windows
+    payload["exists"] = True
+    return payload
 
 
 def begin_loop_git_context(config: Dict[str, Any], paths: Dict[str, Path], section: Dict[str, Any]) -> Dict[str, Any]:
@@ -1102,6 +1201,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "next_section": (select_section(sections) or {}).get("id"),
         "quota": evaluate_quota(config, paths),
         "artifact_count": len(artifacts),
+        "tmux": tmux_status(config, paths),
     }
     print(json.dumps(status, indent=2, ensure_ascii=False))
     return 0
