@@ -1,0 +1,45 @@
+{
+  "workspace": "/absolute/path/to/token-never-sleeps/demo-mail",
+  "product_doc": "/absolute/path/to/token-never-sleeps/demo-mail/demo-product.md",
+  "refresh_minutes": 5,
+  "permission_mode": "acceptEdits",
+  "effort": "medium",
+  "success_interval_seconds": 1,
+  "idle_interval_seconds": 300,
+  "executor_agent": "tns-executor",
+  "verifier_agent": "tns-verifier",
+  "max_budget_usd": 3,
+  "quota": {
+    "provider": "rolling_usage",
+    "window_token_budget": 1800000,
+    "minimum_remaining": 100000,
+    "enforce_freeze": false,
+    "freeze_on_unknown": false
+  },
+  "git": {
+    "enabled": true,
+    "default_branch": "master",
+    "record_all_branches": false,
+    "rollback_on_quota_exhaustion": true,
+    "auto_init": true
+  },
+  "notifications": {
+    "email": {
+      "enabled": true,
+      "method": "smtp",
+      "from": "notify@example.com",
+      "to": [
+        "you@example.com"
+      ],
+      "subject_prefix": "[TNS Mail Demo]",
+      "smtp": {
+        "host": "smtp.example.com",
+        "port": 587,
+        "username": "smtp-user",
+        "password": "smtp-password",
+        "starttls": true,
+        "ssl": false
+      }
+    }
+  }
+}

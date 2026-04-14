@@ -1,0 +1,17 @@
+{
+  "name": "token-never-sleeps",
+  "owner": {
+    "name": "HuiCir"
+  },
+  "plugins": [
+    {
+      "name": "token-never-sleeps",
+      "description": "Claude long-running harness plugin with clean-state handoffs, verifier loops, quota tracking, and optional git rollback.",
+      "version": "0.1.0",
+      "source": "./",
+      "author": {
+        "name": "HuiCir"
+      }
+    }
+  ]
+}

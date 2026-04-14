@@ -1,0 +1,20 @@
+{
+  "name": "token-never-sleeps",
+  "version": "0.1.0",
+  "description": "Token Never Sleeps: a Claude plugin and harness for long-running document execution with clean-state handoffs, verifier loops, and quota-aware scheduling.",
+  "author": {
+    "name": "OpenAI Codex"
+  },
+  "homepage": "https://local.plugin/tns",
+  "license": "MIT",
+  "keywords": [
+    "claude",
+    "plugin",
+    "automation",
+    "long-running-agents",
+    "handoff",
+    "verification",
+    "quota",
+    "scheduler"
+  ]
+}

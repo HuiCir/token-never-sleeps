@@ -1,0 +1,26 @@
+{
+  "workspace": "/absolute/path/to/token-never-sleeps/demo",
+  "product_doc": "/absolute/path/to/token-never-sleeps/demo/demo-product.md",
+  "refresh_minutes": 5,
+  "permission_mode": "acceptEdits",
+  "effort": "medium",
+  "success_interval_seconds": 300,
+  "idle_interval_seconds": 300,
+  "executor_agent": "tns-executor",
+  "verifier_agent": "tns-verifier",
+  "max_budget_usd": 2,
+  "quota": {
+    "provider": "rolling_usage",
+    "window_token_budget": 1200000,
+    "minimum_remaining": 50000,
+    "enforce_freeze": false,
+    "freeze_on_unknown": false
+  },
+  "git": {
+    "enabled": true,
+    "default_branch": "master",
+    "record_all_branches": false,
+    "rollback_on_quota_exhaustion": true,
+    "auto_init": true
+  }
+}
