@@ -90,10 +90,13 @@ def load_config(path: Path) -> Dict[str, Any]:
     config = read_json(path)
     if not isinstance(config, dict):
         raise SystemExit(f"invalid config: {path}")
-    required = ["workspace", "product_doc"]
+    required = ["workspace"]
     missing = [key for key in required if not config.get(key)]
     if missing:
         raise SystemExit(f"config missing required keys: {', '.join(missing)}")
+    if not config.get("product_doc"):
+        workspace = Path(config["workspace"]).expanduser().resolve()
+        config["product_doc"] = str(workspace / "task.md")
     return config
 
 
@@ -603,6 +606,20 @@ def quota_policy(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def looks_like_usage_limit_error(message: str) -> bool:
+    text = (message or "").lower()
+    patterns = [
+        "usage limit",
+        "rate limit",
+        "limit reached",
+        "too many requests",
+        "quota exceeded",
+        "overloaded",
+        "credit balance is too low",
+    ]
+    return any(pattern in text for pattern in patterns)
+
+
 def freeze(paths: Dict[str, Path], manifest: Dict[str, Any], reason: str) -> None:
     window = current_window(manifest)
     payload = {
@@ -762,6 +779,27 @@ def run_agent(
     }
 
 
+def rollback_recent_clean_state(paths: Dict[str, Path], git_context: Dict[str, Any], section: Dict[str, Any], reason: str) -> None:
+    if not git_context.get("enabled"):
+        append_jsonl(paths["activity"], {"event": "rollback_skipped", "at": iso(utc_now()), "section": section["id"], "reason": reason})
+        return
+    workspace = paths["workspace"]
+    checkpoint = git_context["checkpoint"]
+    loop_branch = git_context["loop_branch"]
+    default_branch = git_context["default_branch"]
+    record_all = git_context["record_all_branches"]
+    if record_all:
+        git_commit_all(workspace, f"tns: limit-hit record for {section['id']}")
+        git_run(workspace, ["checkout", default_branch])
+    else:
+        git_run(workspace, ["reset", "--hard", checkpoint])
+        git_run(workspace, ["clean", "-fd"])
+    append_jsonl(
+        paths["activity"],
+        {"event": "git_limit_rollback", "at": iso(utc_now()), "section": section["id"], "loop_branch": loop_branch, "reason": reason},
+    )
+
+
 EXECUTOR_SCHEMA = {
     "type": "object",
     "properties": {
@@ -887,29 +925,8 @@ def run_once(config: Dict[str, Any], paths: Dict[str, Path]) -> bool:
         append_jsonl(paths["activity"], {"event": "complete", "at": iso(utc_now())})
         return False
 
-    quota_cfg = config.get("quota", {})
-    policy = quota_policy(config)
     quota = evaluate_quota(config, paths)
     append_jsonl(paths["activity"], {"event": "quota_check", "at": iso(utc_now()), "quota": quota})
-    minimum_remaining = quota_cfg.get("minimum_remaining")
-    if not quota.get("ok"):
-        if policy["enforce_freeze"] and policy["freeze_on_unknown"]:
-            freeze(paths, manifest, f"quota_unknown: {quota.get('reason', 'unknown')}")
-            return False
-        append_jsonl(paths["activity"], {"event": "quota_warn", "at": iso(utc_now()), "reason": f"quota_unknown: {quota.get('reason', 'unknown')}"})
-    elif minimum_remaining is not None and float(quota.get("remaining", 0)) < float(minimum_remaining):
-        if policy["enforce_freeze"]:
-            freeze(paths, manifest, f"quota_low: {quota.get('remaining')} < {minimum_remaining}")
-            return False
-        append_jsonl(
-            paths["activity"],
-            {
-                "event": "quota_warn",
-                "at": iso(utc_now()),
-                "reason": f"quota_low: {quota.get('remaining')} < {minimum_remaining}",
-            },
-        )
-
     notify_loop_start(paths, config, manifest, section, quota)
     git_context = begin_loop_git_context(config, paths, section)
 
@@ -918,13 +935,24 @@ def run_once(config: Dict[str, Any], paths: Dict[str, Path]) -> bool:
     write_json(paths["sections"], sections)
     append_jsonl(paths["activity"], {"event": "executor_start", "at": iso(utc_now()), "section": section["id"]})
 
-    execution_result = run_agent(
-        config,
-        paths["workspace"],
-        config.get("executor_agent", "tns-executor"),
-        EXECUTOR_SCHEMA,
-        executor_prompt(paths, section, review_note),
-    )
+    try:
+        execution_result = run_agent(
+            config,
+            paths["workspace"],
+            config.get("executor_agent", "tns-executor"),
+            EXECUTOR_SCHEMA,
+            executor_prompt(paths, section, review_note),
+        )
+    except Exception as exc:
+        message = str(exc)
+        if looks_like_usage_limit_error(message):
+            rollback_recent_clean_state(paths, git_context, section, message)
+            freeze(paths, manifest, f"usage_limit: {message}")
+            sections = read_json(paths["sections"], [])
+            update_section(sections, section["id"], status="pending", last_review="Recovered after usage limit.", last_summary="")
+            write_json(paths["sections"], sections)
+            return False
+        raise
     execution = execution_result["payload"]
     append_handoff(paths, "Executor", execution, section["id"])
     append_jsonl(
@@ -1026,8 +1054,6 @@ def run_once(config: Dict[str, Any], paths: Dict[str, Path]) -> bool:
 
     post_quota = evaluate_quota(config, paths)
     exhausted = False
-    if post_quota.get("ok") and minimum_remaining is not None:
-        exhausted = float(post_quota.get("remaining", 0)) < float(minimum_remaining)
     append_jsonl(paths["activity"], {"event": "post_loop_quota", "at": iso(utc_now()), "section": section["id"], "quota": post_quota})
     notify_loop_end(paths, config, section, execution, verification, post_quota, artifact_entries)
     finalize_loop_git_context(

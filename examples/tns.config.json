@@ -1,37 +1,3 @@
 {
-  "workspace": "/absolute/path/to/project",
-  "product_doc": "/absolute/path/to/project/docs/product.md",
-  "refresh_hours": 5,
-  "permission_mode": "acceptEdits",
-  "effort": "high",
-  "success_interval_seconds": 60,
-  "idle_interval_seconds": 60,
-  "executor_agent": "tns-executor",
-  "verifier_agent": "tns-verifier",
-  "max_budget_usd": 3,
-  "quota": {
-    "provider": "rolling_usage",
-    "window_token_budget": 1200000,
-    "minimum_remaining": 50000,
-    "enforce_freeze": false,
-    "freeze_on_unknown": false
-  },
-  "git": {
-    "enabled": true,
-    "default_branch": "master",
-    "record_all_branches": false,
-    "rollback_on_quota_exhaustion": true,
-    "auto_init": true
-  },
-  "notifications": {
-    "email": {
-      "enabled": false,
-      "method": "smtp",
-      "from": "notify@example.com",
-      "to": [
-        "you@example.com"
-      ],
-      "subject_prefix": "[TNS]"
-    }
-  }
+  "workspace": "/absolute/path/to/project"
 }
