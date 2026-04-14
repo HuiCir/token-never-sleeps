@@ -1,6 +1,6 @@
 # Token Never Sleeps
 
-Token Never Sleeps is a Claude plugin for long-running work from a single `task.md`.
+Token Never Sleeps is a Claude plugin for long-running work from a TaskList `task.md`.
 
 Default behavior:
 
@@ -39,7 +39,10 @@ Full Config Template See [examples/tns_config.json](examples/tns_config.json).
 
 ```json
 {
-  "workspace": "/absolute/path/to/your/project"
+  "workspace": "/absolute/path/to/project",
+  "product_doc": "/absolute/path/to/project/task.md",
+  "refresh_hours": 5,
+  "effort": "high",
 }
 ```
 
@@ -49,10 +52,10 @@ Full Config Template See [examples/tns_config.json](examples/tns_config.json).
 # Task
 
 ## Section 1
-Task 1
+Task 1 ...
 
 ## Section 2
-Task 2
+Task 2 ...
 ```
 
 ### 3. Start TNS inside Claude
