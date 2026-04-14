@@ -12,9 +12,17 @@ Default behavior:
 
 ## Quickstart
 
-### 1. Choose how to install
+### 1. Plugin Install
 
-Option A: Get it from GitHub and load it locally
+Install it directly as a Claude plugin
+
+```bash
+claude plugin marketplace add https://github.com/HuiCir/token-never-sleeps
+claude plugin install token-never-sleeps@token-never-sleeps
+claude
+```
+
+Get it from GitHub and load it locally
 
 ```bash
 git clone https://github.com/HuiCir/token-never-sleeps.git
@@ -23,12 +31,10 @@ cd token-never-sleeps
 claude --plugin-dir ~/.claude/plugins/local/token-never-sleeps
 ```
 
-Option B: Install it directly as a Claude plugin
+Install Verification
 
 ```bash
-claude plugin marketplace add https://github.com/HuiCir/token-never-sleeps
-claude plugin install token-never-sleeps@token-never-sleeps
-claude
+claude plugin validate ~/.claude/plugins/local/token-never-sleeps
 ```
 
 ### 2. In your workspace create two files
@@ -58,23 +64,16 @@ Task 1 ...
 Task 2 ...
 ```
 
-### 3. Start TNS inside Claude
-
-```text
-/tns-start run --config /absolute/path/to/your/project/tns_config.json
-```
-
-You do not need to initialize separately. `run` auto-initializes.
-
-### 4. Check status inside Claude
+### 3. Check status inside Claude
 
 ```text
 /tns-status --config /absolute/path/to/your/project/tns_config.json
 ```
 
+### 4. Start TNS inside Claude
 
-## Install Verification
-
-```bash
-claude plugin validate ~/.claude/plugins/local/token-never-sleeps
+```text
+/tns-start run --config /absolute/path/to/your/project/tns_config.json
 ```
+
+
