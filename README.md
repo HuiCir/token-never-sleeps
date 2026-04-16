@@ -79,10 +79,10 @@ Task 2 ...
 ```
 
 If you want the runner itself to stay alive inside `tmux`, enable `tmux.enabled` and
-`tmux.manage_runner`, then launch:
+`tmux.manage_runner`, then start it the same way inside Claude:
 
-```bash
-python3 scripts/tns_runner.py run-tmux --config /abs/path/to/tns_config.json
+```text
+/tns-start run-tmux --config tns_config.json
 ```
 
 ## Tmux Runner Usage
@@ -104,29 +104,32 @@ Recommended config shape:
 
 Recommended flow:
 
-1. Start the managed runner:
+1. Start the managed runner inside Claude:
 
-```bash
-python3 scripts/tns_runner.py run-tmux --config /abs/path/to/tns_config.json
+```text
+/tns-start run-tmux --config /abs/path/to/tns_config.json
 ```
 
-2. Recreate the runner window if needed:
+2. Recreate the runner window inside Claude if needed:
 
-```bash
-python3 scripts/tns_runner.py run-tmux --config /abs/path/to/tns_config.json --restart
+```text
+/tns-start run-tmux --config /abs/path/to/tns_config.json --restart
 ```
 
-3. Inspect state:
+3. Inspect state inside Claude:
 
-```bash
-python3 scripts/tns_runner.py status --config /abs/path/to/tns_config.json
+```text
+/tns-status --config /abs/path/to/tns_config.json
 ```
 
-4. Attach to the tmux session when you need interactive inspection:
+4. Attach to the tmux session from a shell only when you need interactive inspection:
 
 ```bash
 tmux attach -t my-project-tns
 ```
+
+The direct `python3 scripts/tns_runner.py ...` commands are still valid for local debugging,
+but normal plugin use should go through `/tns-start` and `/tns-status`.
 
 What tmux integration gives you:
 

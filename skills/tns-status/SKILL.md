@@ -9,6 +9,10 @@ allowed-tools: ["Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/tns_runner.py:*)"]
 
 Show the current TNS status.
 
+Example:
+
+- `/tns-status --config /abs/path/to/tns_config.json`
+
 ```!
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tns_runner.py" status $ARGUMENTS
 ```
