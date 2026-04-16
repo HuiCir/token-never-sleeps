@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import smtplib
 import subprocess
@@ -104,6 +105,7 @@ def load_config(path: Path) -> Dict[str, Any]:
     if not config.get("product_doc"):
         workspace = Path(config["workspace"]).expanduser().resolve()
         config["product_doc"] = str(workspace / "task.md")
+    config["_config_path"] = str(path.expanduser().resolve())
     return config
 
 
@@ -130,6 +132,18 @@ def notification_settings(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def remote_report_settings(config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = config.get("notifications", {}).get("claude_code_remote", {})
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "root": str(cfg.get("root", "")),
+        "report_task_start": bool(cfg.get("report_task_start", True)),
+        "report_step_progress": bool(cfg.get("report_step_progress", True)),
+        "report_task_complete": bool(cfg.get("report_task_complete", True)),
+        "node_bin": str(cfg.get("node_bin", "node")),
+    }
+
+
 def tmux_settings(config: Dict[str, Any]) -> Dict[str, Any]:
     cfg = config.get("tmux", {})
     return {
@@ -138,6 +152,8 @@ def tmux_settings(config: Dict[str, Any]) -> Dict[str, Any]:
         "session_name": str(cfg.get("session_name", "")),
         "window_name": str(cfg.get("window_name", "tns")),
         "socket_name": str(cfg.get("socket_name", "")),
+        "manage_runner": bool(cfg.get("manage_runner", False)),
+        "runner_window_name": str(cfg.get("runner_window_name", "tns-runner")),
     }
 
 
@@ -207,6 +223,55 @@ def try_send_email_notification(paths: Dict[str, Path], config: Dict[str, Any], 
         append_jsonl(paths["activity"], {"event": "email_error", "at": iso(utc_now()), "phase": phase, "subject": subject, "error": str(exc), "to": settings["to"]})
 
 
+def send_remote_report(config: Dict[str, Any], payload: Dict[str, Any], workspace: Path) -> None:
+    settings = remote_report_settings(config)
+    if not settings["enabled"]:
+        return
+    root = settings["root"].strip()
+    if not root:
+        raise RuntimeError("notifications.claude_code_remote.root is required when enabled")
+    script = Path(__file__).resolve().parent / "ccremote_notify.js"
+    proc = subprocess.run(
+        [settings["node_bin"], str(script), "--ccr-root", root],
+        input=json.dumps(payload, ensure_ascii=False),
+        text=True,
+        capture_output=True,
+        cwd=str(workspace),
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "claude-code-remote notify failed")
+
+
+def try_send_remote_report(paths: Dict[str, Path], config: Dict[str, Any], payload: Dict[str, Any], phase: str) -> None:
+    settings = remote_report_settings(config)
+    if not settings["enabled"]:
+        return
+    try:
+        send_remote_report(config, payload, paths["workspace"])
+        append_jsonl(
+            paths["activity"],
+            {
+                "event": "remote_report_sent",
+                "at": iso(utc_now()),
+                "phase": phase,
+                "title": payload.get("title", ""),
+                "type": payload.get("type", ""),
+            },
+        )
+    except Exception as exc:
+        append_jsonl(
+            paths["activity"],
+            {
+                "event": "remote_report_error",
+                "at": iso(utc_now()),
+                "phase": phase,
+                "title": payload.get("title", ""),
+                "type": payload.get("type", ""),
+                "error": str(exc),
+            },
+        )
+
+
 def notify_loop_start(paths: Dict[str, Path], config: Dict[str, Any], manifest: Dict[str, Any], section: Dict[str, Any], quota: Dict[str, Any]) -> None:
     settings = notification_settings(config)
     if not settings["enabled"]:
@@ -221,6 +286,28 @@ def notify_loop_start(paths: Dict[str, Path], config: Dict[str, Any], manifest: 
         f"Quota snapshot:\n{json.dumps(quota, ensure_ascii=False, indent=2)}\n"
     )
     try_send_email_notification(paths, config, f"Task Start {section['id']}", body, "start")
+    remote_settings = remote_report_settings(config)
+    if remote_settings["report_task_start"]:
+        try_send_remote_report(
+            paths,
+            config,
+            {
+                "type": "waiting",
+                "title": f"TNS Task Started: {section['id']}",
+                "message": f"TNS started section {section['id']} ({section['title']}).",
+                "project": paths["workspace"].name,
+                "metadata": {
+                    "userQuestion": f"Start section {section['id']}: {section['title']}",
+                    "claudeResponse": section.get("body", "").strip() or "Task started.",
+                    "tmuxSession": read_json(paths["tmux"], {}).get("session_name", ""),
+                    "tnsPhase": "task_start",
+                    "tnsSectionId": section["id"],
+                    "tnsSectionTitle": section["title"],
+                    "tnsQuota": quota,
+                },
+            },
+            "task_start",
+        )
 
 
 def notify_loop_end(
@@ -248,6 +335,34 @@ def notify_loop_end(
         f"Quota after loop:\n{json.dumps(post_quota, ensure_ascii=False, indent=2)}\n"
     )
     try_send_email_notification(paths, config, f"Task Complete {section['id']}", body, "end")
+    remote_settings = remote_report_settings(config)
+    if remote_settings["report_task_complete"]:
+        verification_status = (verification or {}).get("status", "n/a")
+        try_send_remote_report(
+            paths,
+            config,
+            {
+                "type": "completed" if verification_status == "pass" else "waiting",
+                "title": f"TNS Loop Result: {section['id']}",
+                "message": f"TNS finished loop for {section['id']} with verification={verification_status}.",
+                "project": paths["workspace"].name,
+                "metadata": {
+                    "userQuestion": f"Section {section['id']} result",
+                    "claudeResponse": (
+                        f"Execution:\n{execution.get('summary', '')}\n\n"
+                        f"Verification:\n{(verification or {}).get('summary', '(not verified)')}"
+                    ).strip(),
+                    "tmuxSession": read_json(paths["tmux"], {}).get("session_name", ""),
+                    "tnsPhase": "task_complete",
+                    "tnsSectionId": section["id"],
+                    "tnsSectionTitle": section["title"],
+                    "tnsVerificationStatus": verification_status,
+                    "tnsArtifacts": artifacts,
+                    "tnsQuota": post_quota,
+                },
+            },
+            "task_complete",
+        )
 
 
 def state_paths(config: Dict[str, Any]) -> Dict[str, Path]:
@@ -264,6 +379,8 @@ def state_paths(config: Dict[str, Any]) -> Dict[str, Path]:
         "activity": state_dir / "activity.jsonl",
         "artifacts": state_dir / "artifacts.json",
         "tmux": state_dir / "tmux.json",
+        "hook_events": state_dir / "hook-events.jsonl",
+        "runner_log": state_dir / "runner.log",
     }
 
 
@@ -295,6 +412,7 @@ def parse_sections(product_doc: Path) -> List[Dict[str, Any]]:
                 "verified_at": None,
                 "last_summary": "",
                 "last_review": "",
+                "current_step": "",
             }
             continue
         if current is not None:
@@ -314,6 +432,7 @@ def parse_sections(product_doc: Path) -> List[Dict[str, Any]]:
                 "verified_at": None,
                 "last_summary": "",
                 "last_review": "",
+                "current_step": "",
             }
         )
     for section in sections:
@@ -347,6 +466,8 @@ def init_state(config: Dict[str, Any]) -> None:
             "# TNS Handoff\n\nThis file is appended by the harness after each executor/verifier cycle.\n",
             encoding="utf-8",
         )
+    if not paths["runner_log"].exists():
+        paths["runner_log"].write_text("", encoding="utf-8")
     ensure_git_ready(config, paths)
     ensure_tmux_ready(config, paths)
     append_jsonl(paths["activity"], {"event": "init", "at": iso(started_at), "sections": len(sections)})
@@ -364,6 +485,86 @@ def ensure_initialized(config: Dict[str, Any]) -> Dict[str, Path]:
     if not paths["manifest"].exists():
         init_state(config)
     return paths
+
+
+def workflow_settings(config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = config.get("workflow", {})
+    default_entry = "executor"
+    default_nodes = [
+        {
+            "id": "executor",
+            "agent": config.get("executor_agent", "tns-executor"),
+            "schema": "executor",
+            "prompt_mode": "executor",
+            "transitions": [
+                {
+                    "field": "outcome",
+                    "equals": "blocked",
+                    "set_status": "blocked",
+                    "summary_field": "summary",
+                    "review_field": "blocker",
+                    "end": True,
+                },
+                {
+                    "field": "clean_state",
+                    "equals": False,
+                    "set_status": "pending",
+                    "summary_field": "summary",
+                    "end": True,
+                },
+                {
+                    "field": "ready_for_verification",
+                    "equals": False,
+                    "set_status": "pending",
+                    "summary_field": "summary",
+                    "end": True,
+                },
+                {"next": "verifier"},
+            ],
+        },
+        {
+            "id": "verifier",
+            "agent": config.get("verifier_agent", "tns-verifier"),
+            "schema": "verifier",
+            "prompt_mode": "verifier",
+            "transitions": [
+                {
+                    "field": "status",
+                    "equals": "pass",
+                    "set_status": "done",
+                    "summary_field": "summary",
+                    "review_value": "",
+                    "set_verified_at": True,
+                    "end": True,
+                },
+                {
+                    "field": "status",
+                    "in": ["fail", "blocked"],
+                    "set_status": "needs_fix",
+                    "summary_field": "summary",
+                    "review_field": "review_note",
+                    "append_review": True,
+                    "end": True,
+                },
+            ],
+        },
+    ]
+    nodes = cfg.get("agents") or default_nodes
+    return {
+        "entry": str(cfg.get("entry", default_entry)),
+        "max_steps_per_run": int(cfg.get("max_steps_per_run", 6)),
+        "agents": nodes,
+    }
+
+
+def ensure_section_defaults(section: Dict[str, Any]) -> Dict[str, Any]:
+    section.setdefault("status", "pending")
+    section.setdefault("attempts", 0)
+    section.setdefault("verified_at", None)
+    section.setdefault("last_summary", "")
+    section.setdefault("last_review", "")
+    section.setdefault("current_step", "")
+    return section
 
 
 def refresh_window_seconds(manifest: Dict[str, Any]) -> int:
@@ -431,6 +632,18 @@ def tmux_has_session(config: Dict[str, Any], session_name: str, workspace: Path)
     return proc.returncode == 0
 
 
+def tmux_has_window(config: Dict[str, Any], session_name: str, window_name: str, workspace: Path) -> bool:
+    proc = subprocess.run(
+        [*tmux_cmd(config), "list-windows", "-t", session_name, "-F", "#{window_name}"],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return False
+    return window_name in [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
 def ensure_tmux_ready(config: Dict[str, Any], paths: Dict[str, Path]) -> None:
     settings = tmux_settings(config)
     if not settings["enabled"]:
@@ -455,8 +668,75 @@ def ensure_tmux_ready(config: Dict[str, Any], paths: Dict[str, Path]) -> None:
         "socket_name": settings["socket_name"] or None,
         "workspace": str(paths["workspace"]),
         "updated_at": iso(utc_now()),
+        "manage_runner": settings["manage_runner"],
+        "runner_window_name": settings["runner_window_name"],
     }
     write_json(paths["tmux"], payload)
+
+
+def tmux_runner_command(config: Dict[str, Any], paths: Dict[str, Path], poll_seconds: int) -> str:
+    config_path = config.get("_config_path")
+    if not config_path:
+        raise RuntimeError("config path is required for tmux runner launch")
+    script_path = Path(__file__).resolve()
+    workspace = paths["workspace"]
+    log_path = paths["runner_log"]
+    return (
+        f"cd {shlex.quote(str(workspace))} && "
+        f"python3 {shlex.quote(str(script_path))} run "
+        f"--config {shlex.quote(str(config_path))} "
+        f"--poll-seconds {int(poll_seconds)} "
+        f">> {shlex.quote(str(log_path))} 2>&1"
+    )
+
+
+def ensure_tmux_runner(config: Dict[str, Any], paths: Dict[str, Path], poll_seconds: int, restart: bool = False) -> Dict[str, Any]:
+    settings = tmux_settings(config)
+    if not settings["enabled"]:
+        raise RuntimeError("tmux is not enabled in config")
+    ensure_tmux_ready(config, paths)
+    session_name = tmux_session_name(config, paths)
+    window_name = settings["runner_window_name"]
+    workspace = paths["workspace"]
+
+    if tmux_has_window(config, session_name, window_name, workspace):
+        if restart:
+            subprocess.run(
+                [*tmux_cmd(config), "kill-window", "-t", f"{session_name}:{window_name}"],
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        else:
+            return tmux_status(config, paths)
+
+    subprocess.run(
+        [*tmux_cmd(config), "new-window", "-d", "-t", session_name, "-n", window_name, "-c", str(workspace)],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    command = tmux_runner_command(config, paths, poll_seconds)
+    subprocess.run(
+        [*tmux_cmd(config), "send-keys", "-t", f"{session_name}:{window_name}", command, "C-m"],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    append_jsonl(
+        paths["activity"],
+        {
+            "event": "tmux_runner_started",
+            "at": iso(utc_now()),
+            "session": session_name,
+            "window": window_name,
+            "poll_seconds": poll_seconds,
+        },
+    )
+    return tmux_status(config, paths)
 
 
 def tmux_status(config: Dict[str, Any], paths: Dict[str, Path]) -> Dict[str, Any]:
@@ -476,6 +756,19 @@ def tmux_status(config: Dict[str, Any], paths: Dict[str, Path]) -> Dict[str, Any
     payload = read_json(paths["tmux"], {})
     payload["windows"] = windows
     payload["exists"] = True
+    runner_window = settings["runner_window_name"]
+    payload["runner_window_exists"] = tmux_has_window(config, session_name, runner_window, paths["workspace"])
+    if payload["runner_window_exists"]:
+        pane_proc = subprocess.run(
+            [*tmux_cmd(config), "list-panes", "-t", f"{session_name}:{runner_window}", "-F", "#{pane_id}:#{pane_pid}:#{pane_current_command}:#{pane_dead}"],
+            cwd=str(paths["workspace"]),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        payload["runner_panes"] = [line.strip() for line in pane_proc.stdout.splitlines() if line.strip()]
+    payload["runner_log"] = str(paths["runner_log"])
+    payload["hook_event_count"] = len(iter_activity(paths["hook_events"]))
     return payload
 
 
@@ -576,6 +869,26 @@ def iter_activity(path: Path) -> List[Dict[str, Any]]:
     return events
 
 
+def recent_hook_feedback(paths: Dict[str, Path], limit: int = 5) -> str:
+    events = iter_activity(paths["hook_events"])
+    if not events:
+        return "No recent hook feedback."
+    lines = []
+    for event in events[-limit:]:
+        pieces = [
+            f"at={event.get('at', '')}",
+            f"event={event.get('event', '')}",
+        ]
+        if event.get("session_id"):
+            pieces.append(f"session_id={event['session_id']}")
+        if event.get("reason"):
+            pieces.append(f"reason={event['reason']}")
+        if event.get("transcript_path"):
+            pieces.append(f"transcript={event['transcript_path']}")
+        lines.append("- " + ", ".join(pieces))
+    return "\n".join(lines)
+
+
 def event_at(event: Dict[str, Any]) -> Optional[datetime]:
     value = event.get("at")
     if not value:
@@ -639,6 +952,7 @@ def maybe_unfreeze(paths: Dict[str, Path], manifest: Dict[str, Any]) -> None:
 def select_section(sections: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     for status in ["needs_fix", "pending", "blocked"]:
         for section in sections:
+            ensure_section_defaults(section)
             if section["status"] == status:
                 return section
     return None
@@ -648,8 +962,10 @@ def recover_in_progress_sections(paths: Dict[str, Path]) -> None:
     sections = read_json(paths["sections"], [])
     changed = False
     for section in sections:
+        ensure_section_defaults(section)
         if section.get("status") == "in_progress":
             section["status"] = "needs_fix"
+            section["current_step"] = ""
             note = section.get("last_review", "")
             prefix = "Recovered after interrupted run."
             section["last_review"] = f"{prefix} {note}".strip()
@@ -945,7 +1261,17 @@ VERIFIER_SCHEMA = {
 }
 
 
-def executor_prompt(paths: Dict[str, Path], section: Dict[str, Any], review_note: str) -> str:
+def schema_by_name(name: Any) -> Dict[str, Any]:
+    if isinstance(name, dict):
+        return name
+    if name == "executor":
+        return EXECUTOR_SCHEMA
+    if name == "verifier":
+        return VERIFIER_SCHEMA
+    raise RuntimeError(f"unsupported workflow schema: {name}")
+
+
+def executor_prompt(paths: Dict[str, Path], section: Dict[str, Any], review_note: str, hook_feedback: str) -> str:
     review_block = f"Review note to address first:\n{review_note}\n\n" if review_note else ""
     return f"""TNS executor run.
 
@@ -955,6 +1281,7 @@ State files:
 - {paths["sections"]}
 - {paths["handoff"]}
 - {paths["reviews"]}
+- {paths["hook_events"]}
 
 Target section:
 - id: {section["id"]}
@@ -963,6 +1290,9 @@ Target section:
 
 Section intent:
 {section.get("body", "").strip() or "(empty body)"}
+
+Recent hook feedback:
+{hook_feedback}
 
 {review_block}Instructions:
 - Make progress on exactly this section.
@@ -973,7 +1303,7 @@ Section intent:
 """
 
 
-def verifier_prompt(paths: Dict[str, Path], section: Dict[str, Any], execution: Dict[str, Any]) -> str:
+def verifier_prompt(paths: Dict[str, Path], section: Dict[str, Any], execution: Dict[str, Any], hook_feedback: str) -> str:
     return f"""TNS verifier run.
 
 Workspace: {paths["workspace"]}
@@ -982,6 +1312,7 @@ State files:
 - {paths["sections"]}
 - {paths["handoff"]}
 - {paths["reviews"]}
+- {paths["hook_events"]}
 
 Section under review:
 - id: {section["id"]}
@@ -997,8 +1328,69 @@ Executor files touched:
 Executor checks run:
 {json.dumps(execution["checks_run"], ensure_ascii=False)}
 
+Recent hook feedback:
+{hook_feedback}
+
 Verify the section with a fresh perspective. Pass only if the section is actually complete enough and supported by evidence.
 """
+
+
+def generic_prompt(
+    paths: Dict[str, Path],
+    section: Dict[str, Any],
+    node: Dict[str, Any],
+    review_note: str,
+    prior_results: Dict[str, Dict[str, Any]],
+    hook_feedback: str,
+) -> str:
+    instructions = str(node.get("instructions", "")).strip()
+    prior_summary = json.dumps(prior_results, ensure_ascii=False, indent=2)
+    review_block = f"Current review note:\n{review_note}\n\n" if review_note else ""
+    return f"""TNS workflow agent run.
+
+Workflow step: {node["id"]}
+Agent: {node["agent"]}
+Workspace: {paths["workspace"]}
+Tracked document: {read_json(paths["manifest"])["product_doc"]}
+State files:
+- {paths["sections"]}
+- {paths["handoff"]}
+- {paths["reviews"]}
+- {paths["hook_events"]}
+
+Target section:
+- id: {section["id"]}
+- title: {section["title"]}
+- anchor: {section["anchor"]}
+
+Section intent:
+{section.get("body", "").strip() or "(empty body)"}
+
+Recent hook feedback:
+{hook_feedback}
+
+Prior workflow results:
+{prior_summary}
+
+{review_block}Workflow instructions:
+{instructions or 'Produce a valid JSON result for this workflow step.'}
+"""
+
+
+def build_stage_prompt(
+    paths: Dict[str, Path],
+    section: Dict[str, Any],
+    node: Dict[str, Any],
+    prior_results: Dict[str, Dict[str, Any]],
+) -> str:
+    hook_feedback = recent_hook_feedback(paths)
+    prompt_mode = node.get("prompt_mode", "generic")
+    if prompt_mode == "executor":
+        return executor_prompt(paths, section, section.get("last_review", ""), hook_feedback)
+    if prompt_mode == "verifier":
+        execution = prior_results.get("executor", {})
+        return verifier_prompt(paths, section, execution, hook_feedback)
+    return generic_prompt(paths, section, node, section.get("last_review", ""), prior_results, hook_feedback)
 
 
 def append_handoff(paths: Dict[str, Path], title: str, body: Dict[str, Any], section_id: str) -> None:
@@ -1012,10 +1404,119 @@ def append_handoff(paths: Dict[str, Path], title: str, body: Dict[str, Any], sec
 
 def update_section(sections: List[Dict[str, Any]], section_id: str, **updates: Any) -> None:
     for section in sections:
+        ensure_section_defaults(section)
         if section["id"] == section_id:
             section.update(updates)
             return
     raise KeyError(section_id)
+
+
+def workflow_node_map(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    nodes = workflow_settings(config)["agents"]
+    mapping: Dict[str, Dict[str, Any]] = {}
+    for node in nodes:
+        node_id = str(node.get("id", "")).strip()
+        if not node_id:
+            raise RuntimeError("workflow agent is missing id")
+        mapping[node_id] = node
+    return mapping
+
+
+def payload_value(payload: Dict[str, Any], field: str) -> Any:
+    current: Any = payload
+    for part in field.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def transition_matches(payload: Dict[str, Any], transition: Dict[str, Any]) -> bool:
+    field = transition.get("field")
+    if not field:
+        return True
+    value = payload_value(payload, str(field))
+    if "equals" in transition:
+        return value == transition.get("equals")
+    if "not_equals" in transition:
+        return value != transition.get("not_equals")
+    if "in" in transition:
+        return value in transition.get("in", [])
+    if transition.get("truthy") is True:
+        return bool(value)
+    if transition.get("truthy") is False:
+        return not bool(value)
+    return False
+
+
+def first_matching_transition(payload: Dict[str, Any], node: Dict[str, Any]) -> Dict[str, Any]:
+    for transition in node.get("transitions", []):
+        if transition_matches(payload, transition):
+            return transition
+    return {}
+
+
+def apply_transition_to_section(
+    sections: List[Dict[str, Any]],
+    reviews: List[Dict[str, Any]],
+    section: Dict[str, Any],
+    payload: Dict[str, Any],
+    transition: Dict[str, Any],
+    node_id: str,
+) -> Dict[str, Any]:
+    updates: Dict[str, Any] = {}
+    if transition.get("set_status"):
+        updates["status"] = transition["set_status"]
+    if transition.get("summary_field"):
+        updates["last_summary"] = payload_value(payload, str(transition["summary_field"])) or ""
+    if "review_value" in transition:
+        updates["last_review"] = transition.get("review_value", "")
+    elif transition.get("review_field"):
+        updates["last_review"] = payload_value(payload, str(transition["review_field"])) or ""
+    if transition.get("set_verified_at"):
+        updates["verified_at"] = iso(utc_now())
+    next_step = str(transition.get("next", "") or "")
+    updates["current_step"] = next_step
+    update_section(sections, section["id"], **updates)
+
+    if transition.get("append_review"):
+        review_note = updates.get("last_review") or updates.get("last_summary") or ""
+        reviews.append(
+            {
+                "section": section["id"],
+                "at": iso(utc_now()),
+                "status": payload.get("status", ""),
+                "summary": updates.get("last_summary", ""),
+                "review_note": review_note,
+                "findings": payload.get("findings", []),
+                "step": node_id,
+            }
+        )
+    return updates
+
+
+def aggregate_step_payloads(step_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    files_touched: List[str] = []
+    checks_run: List[str] = []
+    summary_parts: List[str] = []
+    commit_message = ""
+    for result in step_results:
+        payload = result["payload"]
+        files_touched.extend(payload.get("files_touched", []))
+        checks_run.extend(payload.get("checks_run", []))
+        summary = payload.get("summary")
+        if summary:
+            summary_parts.append(f"{result['node_id']}: {summary}")
+        if payload.get("commit_message"):
+            commit_message = payload["commit_message"]
+    dedup_files = list(dict.fromkeys(files_touched))
+    dedup_checks = list(dict.fromkeys(checks_run))
+    return {
+        "summary": "\n".join(summary_parts),
+        "files_touched": dedup_files,
+        "checks_run": dedup_checks,
+        "commit_message": commit_message,
+    }
 
 
 def run_once(config: Dict[str, Any], paths: Dict[str, Path]) -> bool:
@@ -1025,7 +1526,7 @@ def run_once(config: Dict[str, Any], paths: Dict[str, Path]) -> bool:
     if paths["freeze"].exists():
         return False
 
-    sections = read_json(paths["sections"], [])
+    sections = [ensure_section_defaults(section) for section in read_json(paths["sections"], [])]
     section = select_section(sections)
     if not section:
         append_jsonl(paths["activity"], {"event": "complete", "at": iso(utc_now())})
@@ -1036,126 +1537,113 @@ def run_once(config: Dict[str, Any], paths: Dict[str, Path]) -> bool:
     notify_loop_start(paths, config, manifest, section, quota)
     git_context = begin_loop_git_context(config, paths, section)
 
-    review_note = section.get("last_review", "")
-    update_section(sections, section["id"], status="in_progress", attempts=section.get("attempts", 0) + 1)
+    workflow = workflow_settings(config)
+    node_map = workflow_node_map(config)
+    current_step = section.get("current_step") or workflow["entry"]
+    update_section(
+        sections,
+        section["id"],
+        status="in_progress",
+        attempts=section.get("attempts", 0) + 1,
+        current_step=current_step,
+    )
     write_json(paths["sections"], sections)
-    append_jsonl(paths["activity"], {"event": "executor_start", "at": iso(utc_now()), "section": section["id"]})
-
-    try:
-        execution_result = run_agent(
-            config,
-            paths["workspace"],
-            config.get("executor_agent", "tns-executor"),
-            EXECUTOR_SCHEMA,
-            executor_prompt(paths, section, review_note),
-        )
-    except Exception as exc:
-        message = str(exc)
-        if looks_like_usage_limit_error(message):
-            rollback_recent_clean_state(paths, git_context, section, message)
-            freeze(paths, manifest, f"usage_limit: {message}")
-            sections = read_json(paths["sections"], [])
-            update_section(sections, section["id"], status="pending", last_review="Recovered after usage limit.", last_summary="")
-            write_json(paths["sections"], sections)
-            return False
-        raise
-    execution = execution_result["payload"]
-    append_handoff(paths, "Executor", execution, section["id"])
-    append_jsonl(
-        paths["activity"],
-        {
-            "event": "executor_end",
-            "at": iso(utc_now()),
-            "section": section["id"],
-            "result": execution,
-            "usage": execution_result["usage"],
-        },
-    )
-
-    sections = read_json(paths["sections"], [])
-    if execution["outcome"] == "blocked":
-        update_section(sections, section["id"], status="blocked", last_summary=execution["summary"], last_review=execution["blocker"])
-        write_json(paths["sections"], sections)
-        artifact_entries = update_artifact_index(paths, section, execution, None)
-        notify_loop_end(paths, config, section, execution, None, evaluate_quota(config, paths), artifact_entries)
-        finalize_loop_git_context(
-            config,
-            paths,
-            section,
-            git_context,
-            False,
-            execution.get("commit_message") or f"tns: blocked {section['id']}",
-        )
-        return True
-
-    if not execution["clean_state"] or not execution["ready_for_verification"]:
-        update_section(sections, section["id"], status="pending", last_summary=execution["summary"])
-        write_json(paths["sections"], sections)
-        artifact_entries = update_artifact_index(paths, section, execution, None)
-        notify_loop_end(paths, config, section, execution, None, evaluate_quota(config, paths), artifact_entries)
-        finalize_loop_git_context(
-            config,
-            paths,
-            section,
-            git_context,
-            False,
-            execution.get("commit_message") or f"tns: partial {section['id']}",
-        )
-        return True
-
-    append_jsonl(paths["activity"], {"event": "verifier_start", "at": iso(utc_now()), "section": section["id"]})
-    verification_result = run_agent(
-        config,
-        paths["workspace"],
-        config.get("verifier_agent", "tns-verifier"),
-        VERIFIER_SCHEMA,
-        verifier_prompt(paths, section, execution),
-    )
-    verification = verification_result["payload"]
-    append_handoff(paths, "Verifier", verification, section["id"])
-    append_jsonl(
-        paths["activity"],
-        {
-            "event": "verifier_end",
-            "at": iso(utc_now()),
-            "section": section["id"],
-            "result": verification,
-            "usage": verification_result["usage"],
-        },
-    )
-
-    sections = read_json(paths["sections"], [])
+    prior_results: Dict[str, Dict[str, Any]] = {}
+    step_results: List[Dict[str, Any]] = []
     reviews = read_json(paths["reviews"], [])
-    if verification["status"] == "pass":
-        update_section(
-            sections,
-            section["id"],
-            status="done",
-            verified_at=iso(utc_now()),
-            last_summary=verification["summary"],
-            last_review="",
+    max_steps = workflow["max_steps_per_run"]
+
+    for _ in range(max_steps):
+        node = node_map.get(current_step)
+        if not node:
+            raise RuntimeError(f"workflow step not found: {current_step}")
+        append_jsonl(
+            paths["activity"],
+            {"event": "agent_start", "at": iso(utc_now()), "section": section["id"], "step": current_step, "agent": node["agent"]},
         )
-    else:
-        review_note = verification["review_note"] or verification["summary"]
-        update_section(
-            sections,
-            section["id"],
-            status="needs_fix",
-            last_summary=verification["summary"],
-            last_review=review_note,
-        )
-        reviews.append(
+        try:
+            result = run_agent(
+                config,
+                paths["workspace"],
+                node["agent"],
+                schema_by_name(node.get("schema", "executor")),
+                build_stage_prompt(paths, section, node, prior_results),
+            )
+        except Exception as exc:
+            message = str(exc)
+            if looks_like_usage_limit_error(message):
+                rollback_recent_clean_state(paths, git_context, section, message)
+                freeze(paths, manifest, f"usage_limit: {message}")
+                sections = [ensure_section_defaults(item) for item in read_json(paths["sections"], [])]
+                update_section(
+                    sections,
+                    section["id"],
+                    status="pending",
+                    last_review="Recovered after usage limit.",
+                    last_summary="",
+                    current_step=current_step,
+                )
+                write_json(paths["sections"], sections)
+                return False
+            raise
+
+        payload = result["payload"]
+        prior_results[current_step] = payload
+        step_results.append({"node_id": current_step, "payload": payload, "usage": result["usage"]})
+        append_handoff(paths, current_step.title(), payload, section["id"])
+        append_jsonl(
+            paths["activity"],
             {
-                "section": section["id"],
+                "event": "agent_end",
                 "at": iso(utc_now()),
-                "status": verification["status"],
-                "summary": verification["summary"],
-                "review_note": review_note,
-                "findings": verification["findings"],
-            }
+                "section": section["id"],
+                "step": current_step,
+                "agent": node["agent"],
+                "result": payload,
+                "usage": result["usage"],
+            },
         )
+        remote_settings = remote_report_settings(config)
+        if remote_settings["report_step_progress"]:
+            result_summary = payload.get("summary", "") or json.dumps(payload, ensure_ascii=False)
+            try_send_remote_report(
+                paths,
+                config,
+                {
+                    "type": "waiting",
+                    "title": f"TNS Step Update: {section['id']} / {current_step}",
+                    "message": f"TNS step {current_step} finished for {section['id']}.",
+                    "project": paths["workspace"].name,
+                    "metadata": {
+                        "userQuestion": f"Workflow step {current_step} for {section['id']}",
+                        "claudeResponse": result_summary,
+                        "tmuxSession": read_json(paths["tmux"], {}).get("session_name", ""),
+                        "tnsPhase": "step_progress",
+                        "tnsSectionId": section["id"],
+                        "tnsSectionTitle": section["title"],
+                        "tnsStepId": current_step,
+                        "tnsPayload": payload,
+                    },
+                },
+                "step_progress",
+            )
+
+        sections = [ensure_section_defaults(item) for item in read_json(paths["sections"], [])]
+        transition = first_matching_transition(payload, node)
+        apply_transition_to_section(sections, reviews, section, payload, transition, current_step)
+        write_json(paths["sections"], sections)
         write_json(paths["reviews"], reviews)
-    write_json(paths["sections"], sections)
+        section = next(item for item in sections if item["id"] == section["id"])
+        current_step = section.get("current_step", "")
+        if transition.get("end") or not current_step:
+            break
+    else:
+        sections = [ensure_section_defaults(item) for item in read_json(paths["sections"], [])]
+        update_section(sections, section["id"], status="needs_fix", last_review="Workflow exceeded max_steps_per_run.")
+        write_json(paths["sections"], sections)
+
+    execution = prior_results.get("executor") or aggregate_step_payloads(step_results)
+    verification = prior_results.get("verifier")
     artifact_entries = update_artifact_index(paths, section, execution, verification)
 
     post_quota = evaluate_quota(config, paths)
@@ -1202,6 +1690,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         "quota": evaluate_quota(config, paths),
         "artifact_count": len(artifacts),
         "tmux": tmux_status(config, paths),
+        "workflow": workflow_settings(config),
+        "recent_hook_feedback": recent_hook_feedback(paths),
     }
     print(json.dumps(status, indent=2, ensure_ascii=False))
     return 0
@@ -1222,6 +1712,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             time.sleep(idle_interval)
         else:
             time.sleep(success_interval)
+    return 0
+
+
+def cmd_run_tmux(args: argparse.Namespace) -> int:
+    config = load_config(Path(args.config))
+    paths = ensure_initialized(config)
+    status = ensure_tmux_runner(config, paths, int(args.poll_seconds), restart=bool(args.restart))
+    print(json.dumps(status, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -1275,6 +1773,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--poll-seconds", default=60)
     p_run.add_argument("--once", action="store_true")
     p_run.set_defaults(func=cmd_run)
+
+    p_run_tmux = sub.add_parser("run-tmux")
+    p_run_tmux.add_argument("--config", required=True)
+    p_run_tmux.add_argument("--poll-seconds", default=60)
+    p_run_tmux.add_argument("--restart", action="store_true")
+    p_run_tmux.set_defaults(func=cmd_run_tmux)
 
     p_freeze = sub.add_parser("freeze")
     p_freeze.add_argument("--config", required=True)

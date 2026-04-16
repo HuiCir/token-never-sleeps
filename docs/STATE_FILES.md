@@ -18,6 +18,8 @@ TNS 在目标工作区创建 `.tns/`，核心文件如下：
   - tmux session 元数据与最近一次刷新状态。
 - `hook-events.jsonl`
   - 插件 stop hook 观察到的会话退出事件。
+- `runner.log`
+  - tmux 托管 runner 的持续输出日志。
 - `freeze.json`
   - 冻结原因与下次允许恢复的时间。
 
@@ -30,6 +32,11 @@ TNS 在目标工作区创建 `.tns/`，核心文件如下：
 - `blocked`
 
 TNS 只会在验证通过后把 section 标成 `done`。
+
+`sections.json` 还会记录：
+
+- `current_step`
+  - 当前 workflow 节点，支持多 agent loop 中断后恢复。
 
 `artifacts.json` 记录：
 
@@ -45,3 +52,8 @@ TNS 只会在验证通过后把 section 标成 `done`。
 - loop 开始前 checkpoint
 - loop 完成后的提交
 - 可选的 loop 独立分支
+
+如果启用了 Claude-Code-Remote 集成，`activity.jsonl` 还会包含：
+
+- `remote_report_sent`
+- `remote_report_error`

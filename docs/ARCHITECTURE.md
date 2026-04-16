@@ -6,15 +6,18 @@ Token Never Sleeps 由两层组成：
    - 提供 `tns-executor` / `tns-verifier` 两个 agent。
    - 提供 `/tns-start` 与 `/tns-status` 命令入口。
    - 通过 stop hook 记录会话结束事件，帮助诊断接力行为。
+   - 本地安装时把 skill / hook 里的 runner 路径直接渲染到安装目录，避免依赖宿主注入 `${CLAUDE_PLUGIN_ROOT}`。
 
 2. 外部 harness 层
    - `scripts/tns_runner.py` 负责真正的长程自动化。
+   - `scripts/ccremote_notify.js` 负责把 TNS 事件桥接到本地 Claude-Code-Remote checkout。
    - 维护 `.tns/` 状态文件。
    - 按 5 小时窗口做 refresh。
-   - 可选接入 tmux，给 runner、hook 和多任务并行预留稳定的 session 容器。
+   - 可选深度接入 tmux，把 runner 托管到持久 session / window 中。
+   - 可选集成 Claude-Code-Remote，把开始、阶段进展、完成结果推送到远端通知渠道。
    - 选择未完成 section。
-   - 调用 executor。
-   - 在 clean state 后调用 verifier。
+   - 按 workflow 图调用一个或多个 agent。
+   - 支持基于 agent JSON 输出字段的条件跳转。
    - 根据 quota provider 的结果决定继续还是冻结。
    - 可选用 git 做 checkpoint、分支记录与回退。
 
@@ -32,8 +35,11 @@ Claude 插件可以扩展命令、agent、hook 和 MCP，但它本身不会在 5
 - 每轮结束都要求 clean state。
 - 通过 handoff 文件与 git 历史让下一轮 fresh-context agent 快速接力。
 - 把验证 agent 从执行 agent 分离，避免“自己写、自己乐观通过”。
+- 允许把 executor / verifier loop 抽象成可配置 workflow，支持多 agent 条件分流。
 - 通过 `artifacts.json` 建立 section 到交付物的反向索引。
 - 通过 git checkpoint 让“资源枯竭后回退一个完整 loop”成为可执行操作。
+- 通过 tmux 托管 runner，减少外部 shell 断开导致的调度中断。
+- 把 SMTP / IMAP / chat 渠道凭据保留在 Claude-Code-Remote 的本地配置，不把认证信息扩散到 TNS manifest。
 
 ## token / quota 监控
 

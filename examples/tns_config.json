@@ -31,9 +31,87 @@
     "auto_create": true,
     "session_name": "",
     "window_name": "tns",
-    "socket_name": ""
+    "socket_name": "",
+    "manage_runner": false,
+    "runner_window_name": "tns-runner"
+  },
+  "workflow": {
+    "entry": "executor",
+    "max_steps_per_run": 6,
+    "agents": [
+      {
+        "id": "executor",
+        "agent": "tns-executor",
+        "schema": "executor",
+        "prompt_mode": "executor",
+        "transitions": [
+          {
+            "field": "outcome",
+            "equals": "blocked",
+            "set_status": "blocked",
+            "summary_field": "summary",
+            "review_field": "blocker",
+            "end": true
+          },
+          {
+            "field": "clean_state",
+            "equals": false,
+            "set_status": "pending",
+            "summary_field": "summary",
+            "end": true
+          },
+          {
+            "field": "ready_for_verification",
+            "equals": false,
+            "set_status": "pending",
+            "summary_field": "summary",
+            "end": true
+          },
+          {
+            "next": "verifier"
+          }
+        ]
+      },
+      {
+        "id": "verifier",
+        "agent": "tns-verifier",
+        "schema": "verifier",
+        "prompt_mode": "verifier",
+        "transitions": [
+          {
+            "field": "status",
+            "equals": "pass",
+            "set_status": "done",
+            "summary_field": "summary",
+            "review_value": "",
+            "set_verified_at": true,
+            "end": true
+          },
+          {
+            "field": "status",
+            "in": [
+              "fail",
+              "blocked"
+            ],
+            "set_status": "needs_fix",
+            "summary_field": "summary",
+            "review_field": "review_note",
+            "append_review": true,
+            "end": true
+          }
+        ]
+      }
+    ]
   },
   "notifications": {
+    "claude_code_remote": {
+      "enabled": false,
+      "root": "/absolute/path/to/Claude-Code-Remote",
+      "report_task_start": true,
+      "report_step_progress": true,
+      "report_task_complete": true,
+      "node_bin": "node"
+    },
     "email": {
       "enabled": false,
       "method": "local_mail",
