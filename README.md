@@ -139,8 +139,6 @@ What tmux integration gives you:
 
 ## Claude-Code-Remote Integration
 
-## Claude-Code-Remote Integration
-
 TNS can integrate with a local Claude-Code-Remote checkout and send remote reports for:
 
 - task start
