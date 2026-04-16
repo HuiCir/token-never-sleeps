@@ -184,13 +184,6 @@ Operational note:
 - Local desktop notifications can fail without breaking email / Telegram / LINE delivery.
 - The remote bridge is intentionally credential-free on the TNS side. Authentication stays in Claude-Code-Remote local config.
 
-## Sensitive Data
-
-Keep environment and authentication data out of tracked TNS files.
-
-- Safe to commit: `examples/tns_config.json`, placeholder repo paths, feature toggles, workflow graph, tmux settings.
-- Keep local only: Gmail app passwords, SMTP / IMAP secrets, personal inbox targets, machine-specific `.env` files.
-- If you need examples in docs, use placeholders like `/absolute/path/to/...`, `smtp-user`, and `your-app-password`.
 
 ## Workflow / Multi-Agent
 
