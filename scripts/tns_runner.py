@@ -968,14 +968,16 @@ def maybe_unfreeze(paths: Dict[str, Path], manifest: Dict[str, Any]) -> None:
 
 
 def select_section(sections: List[Dict[str, Any]], max_attempts: int = 3) -> Optional[Dict[str, Any]]:
+    # First pass: mark any section exceeding max_attempts as blocked (unless already done)
+    for section in sections:
+        ensure_section_defaults(section)
+        if section.get("attempts", 0) >= max_attempts and section["status"] in ("pending", "needs_fix", "in_progress"):
+            section["status"] = "blocked"
+    # Second pass: select the highest-priority non-blocked section
     for status in ["needs_fix", "pending", "blocked"]:
         for section in sections:
             ensure_section_defaults(section)
             if section["status"] == status:
-                # Skip sections that exceeded max attempts, mark as blocked
-                if section.get("attempts", 0) >= max_attempts:
-                    section["status"] = "blocked"
-                    continue
                 return section
     return None
 
@@ -1843,6 +1845,108 @@ def cmd_unfreeze(args: argparse.Namespace) -> int:
     return 0
 
 
+def parse_plan_sections(plan_text: str) -> List[Dict[str, Any]]:
+    """Parse Plan mode output into TNS section list.
+
+    Recognizes:
+    - ## Section N / ### Section N
+    - ## Step N / ### Step N
+    - ## Phase N / ### Phase N
+    - ## Task N / ### Task N
+    - ## Context / ## Plan / ## Verification (as section with special id)
+    """
+    lines = plan_text.splitlines()
+    sections: List[Dict[str, Any]] = []
+    current: Dict[str, Any] | None = None
+
+    for line in lines:
+        # Match section/step/phase/task headings
+        match = re.match(r"^(##|###)\s+(.+?)\s*$", line)
+        if match:
+            if current:
+                sections.append(current)
+            heading_text = match.group(2).strip()
+            # Determine if this is a context/plan/verification special section
+            lower_text = heading_text.lower()
+            if lower_text in ("context", "plan", "verification"):
+                sec_id = f"sec-{len(sections)+1:03d}"
+                title = heading_text
+            else:
+                # Strip step/phase/task prefix like "Step 1:" or "1. "
+                cleaned = re.sub(r"^(step|phase|task|phase)\s*\d*[\.\:]\s*", "", lower_text, flags=re.IGNORECASE)
+                title = heading_text if cleaned == lower_text else cleaned.title()
+                sec_id = f"sec-{len(sections)+1:03d}"
+            current = {
+                "id": sec_id,
+                "title": title,
+                "anchor": line.strip(),
+                "body": [],
+            }
+            continue
+        if current is not None:
+            body = current.setdefault("body", [])
+            body.append(line)
+
+    if current:
+        sections.append(current)
+
+    # If no sections found, create one from entire content
+    if not sections:
+        sections.append({
+            "id": "sec-001",
+            "title": "Plan",
+            "anchor": "# Plan",
+            "body": lines,
+        })
+
+    for section in sections:
+        section["body"] = "\n".join(section.get("body", [])).strip()
+
+    return sections
+
+
+def cmd_plan_import(args: argparse.Namespace) -> int:
+    config = load_config(Path(args.config))
+    paths = ensure_initialized(config)
+    plan_path = Path(args.plan_file).expanduser().resolve()
+    if not plan_path.exists():
+        print(f"ERROR: plan file not found: {plan_path}", file=sys.stderr)
+        return 1
+
+    plan_text = plan_path.read_text(encoding="utf-8")
+    new_sections = parse_plan_sections(plan_text)
+
+    if args.merge:
+        # Merge: preserve done/blocked status, update/add pending sections
+        existing = read_json(paths["sections"], [])
+        existing_by_title = {s["title"]: s for s in existing}
+        for ns in new_sections:
+            if ns["title"] in existing_by_title:
+                # Preserve status and attempts of existing section
+                existing_s = existing_by_title[ns["title"]]
+                ns["status"] = existing_s.get("status", "pending")
+                ns["attempts"] = existing_s.get("attempts", 0)
+                ns["verified_at"] = existing_s.get("verified_at")
+                ns["last_summary"] = existing_s.get("last_summary", "")
+                ns["last_review"] = existing_s.get("last_review", "")
+                ns["current_step"] = existing_s.get("current_step", "")
+            else:
+                ns["status"] = "pending"
+                ns["attempts"] = 0
+        sections = [ensure_section_defaults(ns) for ns in new_sections]
+        # Remove sections that are no longer in plan (unless done/blocked)
+        kept = [s for s in existing if s.get("status") in ("done", "blocked")]
+        sections = kept + [s for s in sections if s.get("status") == "pending"]
+    else:
+        # Full replace
+        sections = [ensure_section_defaults(ns) for ns in new_sections]
+
+    write_json(paths["sections"], sections)
+    print(f"Imported {len(new_sections)} sections from {plan_path.name}")
+    print(f"Total sections: {len(sections)} (done={len([s for s in sections if s.get('status')=='done'])})")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Token Never Sleeps runner")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1890,6 +1994,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_unfreeze = sub.add_parser("unfreeze")
     p_unfreeze.add_argument("--config", required=True)
     p_unfreeze.set_defaults(func=cmd_unfreeze)
+
+    p_plan_import = sub.add_parser("plan-import")
+    p_plan_import.add_argument("--config", required=True)
+    p_plan_import.add_argument("--plan-file", required=True)
+    p_plan_import.add_argument("--merge", action="store_true")
+    p_plan_import.set_defaults(func=cmd_plan_import)
+
     return parser
 
 
