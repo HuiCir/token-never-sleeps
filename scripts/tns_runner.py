@@ -968,14 +968,16 @@ def maybe_unfreeze(paths: Dict[str, Path], manifest: Dict[str, Any]) -> None:
 
 
 def select_section(sections: List[Dict[str, Any]], max_attempts: int = 3) -> Optional[Dict[str, Any]]:
+    # First pass: mark any section exceeding max_attempts as blocked (unless already done)
+    for section in sections:
+        ensure_section_defaults(section)
+        if section.get("attempts", 0) >= max_attempts and section["status"] in ("pending", "needs_fix", "in_progress"):
+            section["status"] = "blocked"
+    # Second pass: select the highest-priority non-blocked section
     for status in ["needs_fix", "pending", "blocked"]:
         for section in sections:
             ensure_section_defaults(section)
             if section["status"] == status:
-                # Skip sections that exceeded max attempts, mark as blocked
-                if section.get("attempts", 0) >= max_attempts:
-                    section["status"] = "blocked"
-                    continue
                 return section
     return None
 
