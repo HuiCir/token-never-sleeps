@@ -25,6 +25,8 @@ export function parseSections(productDocPath: string): Section[] {
     if (match) {
       if (current && current.id) {
         current.body = (current._bodyLines || []).join("\n").trim();
+        const c = current as Record<string, unknown>;
+        delete c['_bodyLines'];
         sections.push(current as Section);
       }
       const num = sections.length + 1;
@@ -51,6 +53,8 @@ export function parseSections(productDocPath: string): Section[] {
 
   if (current && current.id) {
     current.body = (current._bodyLines || []).join("\n").trim();
+    const c = current as Record<string, unknown>;
+    delete c['_bodyLines'];
     sections.push(current as Section);
   }
 

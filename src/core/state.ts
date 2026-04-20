@@ -38,7 +38,7 @@ export async function initState(config: TnsConfig): Promise<void> {
     started_at: iso(startedAt),
     product_doc: productDoc,
     refresh_anchor_at: iso(startedAt),
-    refresh_hours: config.refresh_hours,
+    refresh_hours: config.refresh_hours ?? 1,
     refresh_minutes: config.refresh_minutes ?? null,
     refresh_seconds: config.refresh_seconds ?? null,
   };

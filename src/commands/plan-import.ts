@@ -6,11 +6,15 @@ import { parsePlanSections } from "../core/plan-parser.js";
 import { ensureSectionDefaults } from "../core/sections.js";
 import type { Section } from "../types.js";
 
-export async function cmdPlanImport(args: { config: string; plan_file: string; merge: boolean }): Promise<void> {
+export async function cmdPlanImport(args: { config: string; plan_file?: string; planFile?: string; merge: boolean }): Promise<void> {
   const config = loadConfig(args.config);
   const paths = await ensureInitialized(config);
 
-  const planPath = args.plan_file;
+  const planPath = args.plan_file || args.planFile;
+  if (!planPath) {
+    console.error("ERROR: plan-file is required");
+    process.exit(1);
+  }
   let planText: string;
   try {
     planText = readFileSync(planPath, "utf-8");

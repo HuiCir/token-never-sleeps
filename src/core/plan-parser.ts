@@ -11,6 +11,7 @@ export function parsePlanSections(planText: string): Section[] {
     if (match) {
       if (current && current.id) {
         current.body = (current._bodyLines || []).join("\n").trim();
+        delete (current as Record<string, unknown>)['_bodyLines'];
         sections.push(current as Section);
       }
       const headingText = match[2].trim();
@@ -39,6 +40,7 @@ export function parsePlanSections(planText: string): Section[] {
 
   if (current && current.id) {
     current.body = (current._bodyLines || []).join("\n").trim();
+    delete (current as Record<string, unknown>)['_bodyLines'];
     sections.push(current as Section);
   }
 
