@@ -644,6 +644,21 @@ def tmux_has_window(config: Dict[str, Any], session_name: str, window_name: str,
     return window_name in [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
 
+def validate_tmux_session_workspace(config: Dict[str, Any], session_name: str, workspace: Path) -> bool:
+    """Check if an existing tmux session belongs to the expected workspace."""
+    proc = subprocess.run(
+        [*tmux_cmd(config), "display-message", "-t", session_name, "-p", "#{pane_current_path}"],
+        capture_output=True, text=True,
+    )
+    if proc.returncode == 0:
+        actual_cwd = proc.stdout.strip()
+        expected_cwd = str(workspace.resolve())
+        if actual_cwd != expected_cwd:
+            print(f"WARNING: tmux session '{session_name}' workspace mismatch. Expected: {expected_cwd}, Found: {actual_cwd}")
+            return False
+    return True
+
+
 def ensure_tmux_ready(config: Dict[str, Any], paths: Dict[str, Path]) -> None:
     settings = tmux_settings(config)
     if not settings["enabled"]:
@@ -661,6 +676,9 @@ def ensure_tmux_ready(config: Dict[str, Any], paths: Dict[str, Path]) -> None:
             text=True,
         )
         append_jsonl(paths["activity"], {"event": "tmux_session_created", "at": iso(utc_now()), "session": session_name})
+    else:
+        # Session exists - validate it belongs to correct workspace
+        validate_tmux_session_workspace(config, session_name, paths["workspace"])
     payload = {
         "enabled": True,
         "session_name": session_name,
@@ -949,11 +967,15 @@ def maybe_unfreeze(paths: Dict[str, Path], manifest: Dict[str, Any]) -> None:
         append_jsonl(paths["activity"], {"event": "auto_unfreeze", "at": iso(utc_now()), "window": window["index"]})
 
 
-def select_section(sections: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def select_section(sections: List[Dict[str, Any]], max_attempts: int = 3) -> Optional[Dict[str, Any]]:
     for status in ["needs_fix", "pending", "blocked"]:
         for section in sections:
             ensure_section_defaults(section)
             if section["status"] == status:
+                # Skip sections that exceeded max attempts, mark as blocked
+                if section.get("attempts", 0) >= max_attempts:
+                    section["status"] = "blocked"
+                    continue
                 return section
     return None
 
@@ -1028,6 +1050,13 @@ def quota_policy(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def attempts_settings(config: Dict[str, Any]) -> Dict[str, Any]:
+    attempts_cfg = config.get("attempts", {})
+    return {
+        "max_per_section": int(attempts_cfg.get("max_attempts_per_section", 3)),
+    }
+
+
 def looks_like_usage_limit_error(message: str) -> bool:
     text = (message or "").lower()
     patterns = [
@@ -1038,6 +1067,30 @@ def looks_like_usage_limit_error(message: str) -> bool:
         "quota exceeded",
         "overloaded",
         "credit balance is too low",
+    ]
+    return any(pattern in text for pattern in patterns)
+
+
+def looks_like_retryable_error(message: str) -> bool:
+    text = (message or "").lower()
+    patterns = [
+        # Permission errors
+        "requires approval",
+        "not authorized",
+        "edits were not applied",
+        "permission denied",
+        # Network/transient errors
+        "connection",
+        "timeout",
+        "econnrefused",
+        "etimedout",
+        "network",
+        "temporary failure",
+        "name resolution",
+        "connection reset",
+        "connection refused",
+        "broken pipe",
+        "host is down",
     ]
     return any(pattern in text for pattern in patterns)
 
@@ -1118,6 +1171,15 @@ def rebuild_artifact_index(paths: Dict[str, Path]) -> List[Dict[str, Any]]:
     return artifacts
 
 
+def get_effective_permission_mode(config: Dict[str, Any]) -> str:
+    mode = config.get("permission_mode", "default")
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    if mode == "bypassPermissions" and is_root:
+        print("WARNING: bypassPermissions unavailable as root, using acceptEdits")
+        return "acceptEdits"
+    return mode
+
+
 def build_common_claude_args(config: Dict[str, Any], workspace: Path) -> List[str]:
     claude = require_claude()
     plugin_root = Path(__file__).resolve().parents[1]
@@ -1129,7 +1191,7 @@ def build_common_claude_args(config: Dict[str, Any], workspace: Path) -> List[st
         "--add-dir",
         str(workspace),
         "--permission-mode",
-        config.get("permission_mode", "default"),
+        get_effective_permission_mode(config),
         "--effort",
         config.get("effort", "high"),
         "--output-format",
@@ -1164,6 +1226,15 @@ def normalize_schema_result(config: Dict[str, Any], workspace: Path, schema: Dic
     return json.loads(result_text)
 
 
+def make_agent_error(agent: str, proc: subprocess.CompletedProcess) -> RuntimeError:
+    stderr = proc.stderr.strip()
+    if stderr:
+        detail = stderr
+    else:
+        detail = proc.stdout.strip()[:200] if proc.stdout.strip() else f"{agent} failed"
+    return RuntimeError(f"[{agent}] {detail}")
+
+
 def run_agent(
     config: Dict[str, Any],
     workspace: Path,
@@ -1175,14 +1246,14 @@ def run_agent(
     args.extend(["--agent", agent, "--json-schema", json.dumps(schema, ensure_ascii=False), prompt])
     proc = subprocess.run(args, cwd=str(workspace), capture_output=True, text=True)
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f"{agent} failed")
+        raise make_agent_error(agent, proc)
     try:
         outer = json.loads(proc.stdout)
     except json.JSONDecodeError:
-        raise RuntimeError(f"{agent} returned invalid Claude JSON: {proc.stdout[:400]}")
+        raise RuntimeError(f"[{agent}] returned invalid Claude JSON: {proc.stdout[:400]}")
 
     if outer.get("is_error"):
-        raise RuntimeError(outer.get("result") or outer.get("error") or f"{agent} returned an error")
+        raise RuntimeError(outer.get("result") or outer.get("error") or f"[{agent}] returned an error")
 
     result_text = outer.get("result", "")
     try:
@@ -1393,6 +1464,10 @@ def build_stage_prompt(
     return generic_prompt(paths, section, node, section.get("last_review", ""), prior_results, hook_feedback)
 
 
+MAX_HANDOFF_LINES = 500
+KEEP_RECENT_LINES = 100
+
+
 def append_handoff(paths: Dict[str, Path], title: str, body: Dict[str, Any], section_id: str) -> None:
     text = (
         f"\n## {title} | {iso(utc_now())}\n\n"
@@ -1400,6 +1475,14 @@ def append_handoff(paths: Dict[str, Path], title: str, body: Dict[str, Any], sec
         f"- payload: `{json.dumps(body, ensure_ascii=False)}`\n"
     )
     append_text(paths["handoff"], text)
+    # Rotate handoff if too large
+    if paths["handoff"].exists():
+        lines = paths["handoff"].read_text().splitlines()
+        if len(lines) > MAX_HANDOFF_LINES:
+            paths["handoff"].write_text(
+                "\n".join(lines[:50] + ["\n# ... (earlier entries truncated) ...\n"] + lines[-KEEP_RECENT_LINES:]),
+                encoding="utf-8",
+            )
 
 
 def update_section(sections: List[Dict[str, Any]], section_id: str, **updates: Any) -> None:
@@ -1527,7 +1610,8 @@ def run_once(config: Dict[str, Any], paths: Dict[str, Path]) -> bool:
         return False
 
     sections = [ensure_section_defaults(section) for section in read_json(paths["sections"], [])]
-    section = select_section(sections)
+    max_attempts = attempts_settings(config)["max_per_section"]
+    section = select_section(sections, max_attempts=max_attempts)
     if not section:
         append_jsonl(paths["activity"], {"event": "complete", "at": iso(utc_now())})
         return False
@@ -1581,6 +1665,24 @@ def run_once(config: Dict[str, Any], paths: Dict[str, Path]) -> bool:
                     status="pending",
                     last_review="Recovered after usage limit.",
                     last_summary="",
+                    current_step=current_step,
+                )
+                write_json(paths["sections"], sections)
+                return False
+            if looks_like_retryable_error(message):
+                append_jsonl(paths["activity"], {
+                    "event": "transient_error",
+                    "at": iso(utc_now()),
+                    "section": section["id"],
+                    "step": current_step,
+                    "error": message[:500],
+                })
+                sections = [ensure_section_defaults(item) for item in read_json(paths["sections"], [])]
+                update_section(
+                    sections,
+                    section["id"],
+                    status="needs_fix",
+                    last_review=f"Transient error (will retry): {message[:200]}",
                     current_step=current_step,
                 )
                 write_json(paths["sections"], sections)

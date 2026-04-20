@@ -4,6 +4,9 @@
   "refresh_hours": 5,
   "refresh_minutes": null,
   "refresh_seconds": null,
+  // permission_mode options: default, acceptEdits, plan, auto, dontAsk, bypassPermissions
+  // Note: bypassPermissions is NOT available when running as root (security restriction).
+  // When running as root with bypassPermissions configured, it auto-falls back to acceptEdits.
   "permission_mode": "acceptEdits",
   "effort": "high",
   "success_interval_seconds": 1,
@@ -11,6 +14,11 @@
   "executor_agent": "tns-executor",
   "verifier_agent": "tns-verifier",
   "max_budget_usd": null,
+  // Limits retry attempts per section to prevent infinite loops.
+  // Sections exceeding this limit are marked as 'blocked' for manual review.
+  "attempts": {
+    "max_attempts_per_section": 3
+  },
   "git": {
     "enabled": true,
     "default_branch": "master",
@@ -28,6 +36,8 @@
   },
   "tmux": {
     "enabled": false,
+    // Use {workspace_name} placeholder for unique session names to avoid conflicts.
+    // Example: "session_name": "tns-{workspace_name}"
     "auto_create": true,
     "session_name": "",
     "window_name": "tns",
@@ -37,6 +47,7 @@
   },
   "workflow": {
     "entry": "executor",
+    // max_steps_per_run: max agent calls per run cycle (executor + verifier = 1 step each)
     "max_steps_per_run": 6,
     "agents": [
       {
