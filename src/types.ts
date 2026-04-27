@@ -42,6 +42,16 @@ export interface StatePaths {
   runtime: string;
   approvals: string;
   exploration: string;
+  diagnostics: string;
+  command_runs: string;
+  section_outputs_dir: string;
+  compiled_dir: string;
+  compiled_program: string;
+  compiler_review: string;
+  lock_events: string;
+  tool_events: string;
+  injection_events: string;
+  agent_runs_dir: string;
   hook_events: string;
   runner_log: string;
 }
@@ -95,6 +105,7 @@ export interface PermissionProfile {
   disallowed_bash_commands?: string[];
   requires_approval?: string | null;
   workspace_only?: boolean;
+  restricted_paths?: string[];
 }
 
 export interface SectionPermissionRule {
@@ -123,6 +134,185 @@ export interface ExplorationSettings {
   agent: string;
 }
 
+export type ValidatorStage = "preflight" | "pre_step" | "post_step" | "post_run";
+
+export interface PreflightSettings {
+  required_files?: string[];
+  required_directories?: string[];
+}
+
+export interface ValidatorSpec {
+  id: string;
+  stage: ValidatorStage;
+  kind: "file_exists" | "directory_exists" | "text_regex" | "text_not_regex" | "json_path_equals" | "command_set";
+  path?: string;
+  match_title?: string;
+  match_step?: string;
+  pattern?: string;
+  flags?: string;
+  json_path?: string;
+  equals?: string | number | boolean | null;
+  command_set?: string;
+  description?: string;
+  review_prefix?: string;
+}
+
+export interface CommandInvocationSpec {
+  exec: string;
+  args?: string[];
+  cwd?: string;
+  timeout_seconds?: number;
+  env?: Record<string, string>;
+  allowed_exit_codes?: number[];
+  description?: string;
+}
+
+export interface CommandSetSpec {
+  id: string;
+  command?: string[];
+  commands?: CommandInvocationSpec[];
+  cwd?: string;
+  timeout_seconds?: number;
+  env?: Record<string, string>;
+  allowed_exit_codes?: number[];
+  description?: string;
+}
+
+export interface CommandHookRule {
+  stage: ValidatorStage;
+  match_title?: string;
+  match_step?: string;
+  command_sets: string[];
+}
+
+export interface CommandBridgeSettings {
+  command_sets: Record<string, CommandSetSpec>;
+  hooks?: CommandHookRule[];
+}
+
+export interface PolicyAction {
+  action: "continue" | "block_section" | "mark_needs_fix" | "freeze" | "fail_run";
+  freeze_seconds?: number;
+  review_prefix?: string;
+}
+
+export interface PolicySettings {
+  preflight_failure?: PolicyAction;
+  command_failure?: PolicyAction;
+  outside_workspace_violation?: PolicyAction;
+  validator_failure?: Partial<Record<ValidatorStage, PolicyAction>>;
+}
+
+export interface StructuredOutputSettings {
+  write_section_outputs: boolean;
+}
+
+export interface ExternalToolSpec {
+  name: string;
+  required?: boolean;
+  purpose?: string;
+}
+
+export interface ExternalSkillSpec {
+  name: string;
+  required?: boolean;
+  purpose?: string;
+}
+
+export interface ExternalMcpSpec {
+  server: string;
+  resource?: string;
+  required?: boolean;
+  purpose?: string;
+}
+
+export interface ExternalDependencySettings {
+  tools?: ExternalToolSpec[];
+  skills?: ExternalSkillSpec[];
+  mcp?: ExternalMcpSpec[];
+}
+
+export interface InjectionProfile {
+  skills?: string[];
+  external_skill_paths?: string[];
+  add_dirs?: string[];
+  description?: string;
+}
+
+export interface StageInjectionRule {
+  match_mode?: "compile" | "executor" | "verifier" | "exploration";
+  match_title?: string;
+  match_step?: string;
+  profile: string;
+}
+
+export interface InjectionSettings {
+  default_profile?: string | null;
+  profiles: Record<string, InjectionProfile>;
+  rules?: StageInjectionRule[];
+}
+
+export interface FsmCondition {
+  path?: string;
+  equals?: string | number | boolean | null;
+  not_equals?: string | number | boolean | null;
+  in?: Array<string | number | boolean | null>;
+  truthy?: boolean;
+  lt?: number;
+  lte?: number;
+  gt?: number;
+  gte?: number;
+}
+
+export type FsmLiteral = string | number | boolean | null | string[] | number[] | boolean[] | Record<string, unknown>;
+
+export interface FsmInstruction {
+  op: "set" | "inc" | "dec" | "append" | "emit" | "if" | "while";
+  path?: string;
+  value?: FsmLiteral;
+  by?: number;
+  event?: string;
+  cond?: FsmCondition;
+  then?: FsmInstruction[];
+  else?: FsmInstruction[];
+  body?: FsmInstruction[];
+  max_iterations?: number;
+}
+
+export interface FsmTransitionSpec {
+  id?: string;
+  to: string;
+  when?: FsmCondition;
+  actions?: FsmInstruction[];
+  description?: string;
+}
+
+export interface FsmStateSpec {
+  id: string;
+  type?: "task" | "decision" | "loop" | "terminal";
+  on_enter?: FsmInstruction[];
+  transitions?: FsmTransitionSpec[];
+  terminal?: boolean;
+  description?: string;
+}
+
+export interface FsmProgramSettings {
+  entry: string;
+  context?: Record<string, unknown>;
+  states: FsmStateSpec[];
+  max_steps?: number;
+}
+
+export interface CompilerPatch {
+  preflight?: PreflightSettings;
+  validators?: ValidatorSpec[];
+  command_bridge?: CommandBridgeSettings;
+  policy?: PolicySettings;
+  permissions?: PermissionSettings;
+  externals?: ExternalDependencySettings;
+  program?: FsmProgramSettings;
+}
+
 export interface TnsConfig {
   workspace: string;
   product_doc: string;
@@ -140,6 +330,14 @@ export interface TnsConfig {
   monitor?: Partial<MonitorSettings>;
   exploration?: Partial<ExplorationSettings>;
   attempts?: { max_attempts_per_section?: number };
+  preflight?: PreflightSettings;
+  validators?: ValidatorSpec[];
+  command_bridge?: CommandBridgeSettings;
+  policy?: PolicySettings;
+  outputs?: Partial<StructuredOutputSettings>;
+  externals?: ExternalDependencySettings;
+  program?: FsmProgramSettings;
+  injections?: InjectionSettings;
   _config_path?: string;
 }
 
@@ -175,7 +373,7 @@ export interface AgentUsage {
 }
 
 export interface AgentOutput {
-  payload: ExecutorResult | VerifierResult | ExplorationResult;
+  payload: ExecutorResult | VerifierResult | ExplorationResult | CompilerResult;
   usage: AgentUsage;
   raw: Record<string, unknown>;
 }
@@ -252,6 +450,103 @@ export interface ActivityEvent {
   usage?: AgentUsage;
   error?: string;
   [key: string]: unknown;
+}
+
+export interface ValidatorResult {
+  id: string;
+  stage: ValidatorStage;
+  ok: boolean;
+  message: string;
+  section_id?: string;
+  step?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface CommandRunResult {
+  id: string;
+  ok: boolean;
+  stage: ValidatorStage;
+  section_id?: string;
+  step?: string;
+  command: string[];
+  cwd: string;
+  exit_code: number | null;
+  stdout: string;
+  stderr: string;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+}
+
+export interface DiagnosticsState {
+  updated_at: string | null;
+  last_preflight: ValidatorResult[];
+  last_validator_results: ValidatorResult[];
+  last_command_runs: CommandRunResult[];
+  last_error: string | null;
+}
+
+export interface SectionOutputRecord {
+  section_id: string;
+  section_title: string;
+  status: Section["status"];
+  current_step: string;
+  updated_at: string;
+  step_results: Array<{
+    node_id: string;
+    payload: Record<string, unknown>;
+    usage: Record<string, unknown>;
+  }>;
+  validator_results: ValidatorResult[];
+  command_runs: CommandRunResult[];
+}
+
+export interface CompilerResult {
+  summary: string;
+  confidence: "high" | "medium" | "low";
+  findings: string[];
+  blockers: string[];
+  files_touched: string[];
+  checks_run: string[];
+  patch: CompilerPatch;
+}
+
+export interface ToolUseEvent {
+  at: string;
+  agent: string;
+  run_id: string;
+  section_id?: string;
+  step?: string;
+  type: string;
+  name?: string;
+  id?: string;
+  denied?: boolean;
+  raw: Record<string, unknown>;
+}
+
+export interface FsmTransitionTrace {
+  from: string;
+  to: string;
+  transition_id: string;
+  matched: boolean;
+  reason: string;
+}
+
+export interface FsmSimulationTrace {
+  state: string;
+  step: number;
+  events: string[];
+  context: Record<string, unknown>;
+  transition?: FsmTransitionTrace | null;
+}
+
+export interface FsmSimulationResult {
+  ok: boolean;
+  reason: string;
+  steps: number;
+  terminal_state: string | null;
+  trace: FsmSimulationTrace[];
+  final_context: Record<string, unknown>;
 }
 
 export interface ExplorationResult {

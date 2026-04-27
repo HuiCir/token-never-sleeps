@@ -10,6 +10,7 @@
     ".claude-plugin",
     "agents",
     "dist",
+    "skills",
     "templates",
     "README.md",
     "LICENSE"

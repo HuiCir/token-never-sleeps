@@ -13,6 +13,11 @@ import { cmdStart } from "./commands/start.js";
 import { cmdHelp } from "./commands/help.js";
 import { cmdBtw } from "./commands/btw.js";
 import { cmdApprove, cmdRevoke } from "./commands/approve.js";
+import { cmdDoctor } from "./commands/doctor.js";
+import { cmdRecover } from "./commands/recover.js";
+import { cmdTrace } from "./commands/trace.js";
+import { cmdCompile } from "./commands/compile.js";
+import { cmdSimulate } from "./commands/simulate.js";
 
 interface CommonArgs {
   config: string;
@@ -26,17 +31,40 @@ async function main() {
   }
   const argv = await yargs(rawArgs)
     .command("help [topic]", "Show TNS help", (y) =>
-      y.positional("topic", { type: "string", choices: ["init", "run", "config", "permissions", "exploration", "status", "tmux", "btw"] })
+      y.positional("topic", { type: "string", choices: ["init", "run", "config", "permissions", "exploration", "status", "tmux", "btw", "policy", "doctor", "compile", "fsm"] })
     )
     .command("init", "Initialize TNS state or scaffold a workspace", (y) =>
       y.option("config", { type: "string" })
         .option("workspace", { type: "string" })
         .option("task", { type: "string" })
-        .option("template", { type: "string", choices: ["blank", "novel-writing", "audiobook-video"], default: "blank" })
+        .option("template", { type: "string", choices: ["blank", "novel-writing", "fsm-control-flow"], default: "blank" })
         .option("runner", { type: "string", choices: ["auto", "direct", "tmux"], default: "auto" })
         .option("force", { type: "boolean", default: false })
     )
     .command("status", "Show TNS status", (y) => y.option("config", { type: "string", demandOption: true }))
+    .command("compile", "Compile task.md and config into a deterministic orchestration program", (y) =>
+      y.option("config", { type: "string", demandOption: true })
+        .option("synthesize", { type: "boolean", default: false })
+        .option("apply", { type: "boolean", default: false })
+    )
+    .command("simulate", "Simulate the compiled/configured FSM program", (y) =>
+      y.option("config", { type: "string", demandOption: true })
+        .option("set", { type: "array" })
+        .option("max-steps", { type: "number" })
+        .option("compact", { type: "boolean", default: false })
+    )
+    .command("doctor", "Run preflight and environment diagnostics", (y) =>
+      y.option("config", { type: "string", demandOption: true })
+    )
+    .command("trace", "Show recent activity trace", (y) =>
+      y.option("config", { type: "string", demandOption: true })
+        .option("section", { type: "string" })
+        .option("limit", { type: "number", default: 30 })
+    )
+    .command("recover", "Clear stale runtime/lock state and recover interrupted sections", (y) =>
+      y.option("config", { type: "string", demandOption: true })
+        .option("force", { type: "boolean", default: false })
+    )
     .command("btw", "Read-only live snapshot for a running TNS workspace", (y) =>
       y.option("config", { type: "string", demandOption: true })
         .option("events", { type: "number", default: 8 })
@@ -95,10 +123,25 @@ async function main() {
       await cmdHelp(args as unknown as { topic?: string });
       break;
     case "init":
-      await cmdInit(args as unknown as { config?: string; workspace?: string; task?: string; template?: "blank" | "novel-writing" | "audiobook-video"; runner?: "auto" | "direct" | "tmux"; force?: boolean });
+      await cmdInit(args as unknown as { config?: string; workspace?: string; task?: string; template?: "blank" | "novel-writing" | "fsm-control-flow"; runner?: "auto" | "direct" | "tmux"; force?: boolean });
       break;
     case "status":
       await cmdStatus(args as unknown as { config: string });
+      break;
+    case "compile":
+      await cmdCompile(args as unknown as { config: string; synthesize?: boolean; apply?: boolean });
+      break;
+    case "simulate":
+      await cmdSimulate(args as unknown as { config: string; set?: string[]; max_steps?: number; maxSteps?: number; compact?: boolean });
+      break;
+    case "doctor":
+      await cmdDoctor(args as unknown as { config: string });
+      break;
+    case "trace":
+      await cmdTrace(args as unknown as { config: string; section?: string; limit?: number });
+      break;
+    case "recover":
+      await cmdRecover(args as unknown as { config: string; force?: boolean });
       break;
     case "btw":
       await cmdBtw(args as unknown as { config: string; events?: number; reviews?: number });

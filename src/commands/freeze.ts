@@ -3,11 +3,11 @@ import { statePaths, ensureInitialized, loadManifest } from "../core/state.js";
 import { writeJson, appendJsonl, pathExists } from "../lib/fs.js";
 import { iso, utcNow, currentWindow } from "../lib/time.js";
 import type { FreezeRecord } from "../types.js";
-import { withWorkspaceLock } from "../lib/lock.js";
+import { withResourceLocks } from "../lib/lock.js";
 
 export async function cmdFreeze(args: { config: string; reason?: string }): Promise<void> {
   const config = loadConfig(args.config);
-  await withWorkspaceLock(config.workspace, "tns freeze", async () => {
+  await withResourceLocks(config.workspace, ["workspace", "control", "state"], "tns freeze", async () => {
     const paths = await ensureInitialized(config);
     const manifest = await loadManifest(paths);
 
@@ -29,7 +29,7 @@ export async function cmdFreeze(args: { config: string; reason?: string }): Prom
 
 export async function cmdUnfreeze(args: { config: string }): Promise<void> {
   const config = loadConfig(args.config);
-  await withWorkspaceLock(config.workspace, "tns unfreeze", async () => {
+  await withResourceLocks(config.workspace, ["workspace", "control", "state"], "tns unfreeze", async () => {
     const paths = await ensureInitialized(config);
     const { appendJsonl: appendJ, pathExists: exists } = await import("../lib/fs.js");
     if (await exists(paths.freeze)) {

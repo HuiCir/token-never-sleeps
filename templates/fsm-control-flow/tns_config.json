@@ -1,0 +1,192 @@
+{
+  "refresh_hours": 5,
+  "refresh_minutes": null,
+  "refresh_seconds": null,
+  "permission_mode": "acceptEdits",
+  "permissions": {
+    "default_profile": "standard",
+    "profiles": {
+      "standard": {
+        "permission_mode": "acceptEdits",
+        "allowed_bash_commands": ["pwd", "ls", "cat", "sed", "rg", "find", "git", "node"],
+        "workspace_only": true
+      }
+    },
+    "section_profiles": []
+  },
+  "effort": "high",
+  "success_interval_seconds": 1,
+  "idle_interval_seconds": 60,
+  "max_budget_usd": null,
+  "monitor": {
+    "heartbeat_seconds": 30,
+    "max_agent_runtime_seconds": 1800,
+    "kill_grace_seconds": 15
+  },
+  "exploration": {
+    "enabled": false,
+    "allow_taskx": true,
+    "taskx_filename": "taskx.md",
+    "max_rounds_per_window": 1,
+    "agent": "tns-executor"
+  },
+  "tmux": {
+    "enabled": false,
+    "auto_create": true,
+    "session_name": "",
+    "window_name": "tns",
+    "socket_name": "",
+    "manage_runner": false,
+    "runner_window_name": "tns-runner"
+  },
+  "attempts": {
+    "max_attempts_per_section": 3
+  },
+  "preflight": {
+    "required_files": ["task.md"],
+    "required_directories": [".tns"]
+  },
+  "validators": [],
+  "command_bridge": {
+    "command_sets": {},
+    "hooks": []
+  },
+  "policy": {
+    "preflight_failure": {
+      "action": "block_section",
+      "review_prefix": "Preflight failed"
+    },
+    "command_failure": {
+      "action": "mark_needs_fix",
+      "review_prefix": "Command hook failed"
+    },
+    "outside_workspace_violation": {
+      "action": "block_section",
+      "review_prefix": "Workspace boundary violation"
+    },
+    "validator_failure": {
+      "preflight": {
+        "action": "block_section",
+        "review_prefix": "Preflight validator failed"
+      },
+      "pre_step": {
+        "action": "mark_needs_fix",
+        "review_prefix": "Pre-step validator failed"
+      },
+      "post_step": {
+        "action": "mark_needs_fix",
+        "review_prefix": "Post-step validator failed"
+      },
+      "post_run": {
+        "action": "mark_needs_fix",
+        "review_prefix": "Post-run validator failed"
+      }
+    }
+  },
+  "outputs": {
+    "write_section_outputs": true
+  },
+  "externals": {
+    "tools": [
+      { "name": "node", "required": true, "purpose": "simulate and inspect runtime logic" }
+    ],
+    "skills": [
+      { "name": "tns-program-compiler", "required": true, "purpose": "compile orchestration into an explicit FSM contract" }
+    ],
+    "mcp": []
+  },
+  "program": {
+    "entry": "init",
+    "context": {
+      "approved": false,
+      "retries": 0,
+      "max_retries": 2,
+      "ready": false,
+      "history": []
+    },
+    "max_steps": 12,
+    "states": [
+      {
+        "id": "init",
+        "type": "task",
+        "on_enter": [
+          { "op": "append", "path": "history", "value": "init" }
+        ],
+        "transitions": [
+          { "id": "to-branch", "to": "branch" }
+        ]
+      },
+      {
+        "id": "branch",
+        "type": "decision",
+        "on_enter": [
+          {
+            "op": "if",
+            "cond": { "path": "approved", "truthy": true },
+            "then": [{ "op": "append", "path": "history", "value": "approved" }],
+            "else": [{ "op": "append", "path": "history", "value": "await-approval" }]
+          }
+        ],
+        "transitions": [
+          { "id": "approval-needed", "to": "approval", "when": { "path": "approved", "truthy": false } },
+          { "id": "approval-ready", "to": "work", "when": { "path": "approved", "truthy": true } }
+        ]
+      },
+      {
+        "id": "approval",
+        "type": "task",
+        "on_enter": [
+          { "op": "set", "path": "approved", "value": true },
+          { "op": "emit", "event": "approval-granted" }
+        ],
+        "transitions": [
+          { "id": "approval-loop", "to": "branch" }
+        ]
+      },
+      {
+        "id": "work",
+        "type": "loop",
+        "on_enter": [
+          {
+            "op": "while",
+            "cond": { "path": "retries", "lt": 2 },
+            "max_iterations": 5,
+            "body": [
+              { "op": "append", "path": "history", "value": "work" },
+              { "op": "inc", "path": "retries", "by": 1 }
+            ]
+          }
+        ],
+        "transitions": [
+          { "id": "to-verify", "to": "verify" }
+        ]
+      },
+      {
+        "id": "verify",
+        "type": "decision",
+        "on_enter": [
+          {
+            "op": "if",
+            "cond": { "path": "retries", "gte": 2 },
+            "then": [{ "op": "set", "path": "ready", "value": true }],
+            "else": [{ "op": "set", "path": "ready", "value": false }]
+          }
+        ],
+        "transitions": [
+          { "id": "done-ready", "to": "done", "when": { "path": "ready", "truthy": true } },
+          { "id": "repeat-work", "to": "work", "when": { "path": "ready", "truthy": false } }
+        ]
+      },
+      {
+        "id": "done",
+        "type": "terminal",
+        "terminal": true,
+        "on_enter": [
+          { "op": "append", "path": "history", "value": "done" },
+          { "op": "emit", "event": "fsm-complete" }
+        ],
+        "transitions": []
+      }
+    ]
+  }
+}

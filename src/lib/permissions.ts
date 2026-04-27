@@ -7,6 +7,7 @@ export interface ResolvedPermissionProfile {
   disallowed_tools: string[];
   approval_tag: string | null;
   workspace_only: boolean;
+  restricted_paths: string[];
 }
 
 const DEFAULT_STANDARD_COMMANDS = [
@@ -91,6 +92,7 @@ export function resolvePermissionProfile(config: TnsConfig, section: Section, st
     disallowed_tools: tools.disallowed_tools,
     approval_tag: profile.requires_approval ?? null,
     workspace_only: profile.workspace_only ?? true,
+    restricted_paths: Array.isArray(profile.restricted_paths) ? profile.restricted_paths.map(String) : [],
   };
 }
 

@@ -6,10 +6,10 @@ import { initState } from "../core/state.js";
 import { pathExists, writeJson, writeText } from "../lib/fs.js";
 import type { PermissionSettings, TnsConfig, WorkflowSettings } from "../types.js";
 import { probeTmux, tmuxPath } from "../lib/platform.js";
-import { withWorkspaceLock } from "../lib/lock.js";
+import { withResourceLocks } from "../lib/lock.js";
 import { statePaths } from "../core/state.js";
 
-type TemplateName = "blank" | "novel-writing" | "audiobook-video";
+type TemplateName = "blank" | "novel-writing" | "fsm-control-flow";
 
 const DEFAULT_TASK = `# Task
 
@@ -160,6 +160,70 @@ async function defaultConfig(workspace: string, taskPath: string, runner: "auto"
     attempts: {
       max_attempts_per_section: 3,
     },
+    preflight: {
+      required_files: ["task.md"],
+      required_directories: [".tns"],
+    },
+    validators: [],
+    command_bridge: {
+      command_sets: {},
+      hooks: [],
+    },
+    policy: {
+      preflight_failure: {
+        action: "block_section",
+        review_prefix: "Preflight failed",
+      },
+      command_failure: {
+        action: "mark_needs_fix",
+        review_prefix: "Command hook failed",
+      },
+      outside_workspace_violation: {
+        action: "block_section",
+        review_prefix: "Workspace boundary violation",
+      },
+      validator_failure: {
+        preflight: {
+          action: "block_section",
+          review_prefix: "Preflight validator failed",
+        },
+        pre_step: {
+          action: "mark_needs_fix",
+          review_prefix: "Pre-step validator failed",
+        },
+        post_step: {
+          action: "mark_needs_fix",
+          review_prefix: "Post-step validator failed",
+        },
+        post_run: {
+          action: "mark_needs_fix",
+          review_prefix: "Post-run validator failed",
+        },
+      },
+    },
+    outputs: {
+      write_section_outputs: true,
+    },
+    externals: {
+      tools: [],
+      skills: [],
+      mcp: [],
+    },
+    injections: {
+      default_profile: null,
+      profiles: {
+        compiler: {
+          skills: ["tns-program-compiler"],
+          description: "Inject the compiler skill only for compile synthesis passes.",
+        },
+      },
+      rules: [
+        {
+          match_mode: "compile",
+          profile: "compiler",
+        },
+      ],
+    },
   };
 }
 
@@ -230,6 +294,49 @@ function mergeConfig(base: TnsConfig, template: Partial<TnsConfig>, workspace: s
     attempts: {
       max_attempts_per_section: template.attempts?.max_attempts_per_section ?? base.attempts?.max_attempts_per_section ?? 3,
     },
+    preflight: {
+      ...(base.preflight ?? {}),
+      ...(template.preflight ?? {}),
+    },
+    validators: template.validators ?? base.validators ?? [],
+    command_bridge: {
+      ...(base.command_bridge ?? { command_sets: {}, hooks: [] }),
+      ...(template.command_bridge ?? {}),
+      command_sets: {
+        ...(base.command_bridge?.command_sets ?? {}),
+        ...(template.command_bridge?.command_sets ?? {}),
+      },
+      hooks: template.command_bridge?.hooks ?? base.command_bridge?.hooks ?? [],
+    },
+    policy: {
+      ...(base.policy ?? {}),
+      ...(template.policy ?? {}),
+      validator_failure: {
+        ...(base.policy?.validator_failure ?? {}),
+        ...(template.policy?.validator_failure ?? {}),
+      },
+    },
+    outputs: {
+      ...(base.outputs ?? {}),
+      ...(template.outputs ?? {}),
+    },
+    externals: {
+      ...(base.externals ?? {}),
+      ...(template.externals ?? {}),
+      tools: template.externals?.tools ?? base.externals?.tools ?? [],
+      skills: template.externals?.skills ?? base.externals?.skills ?? [],
+      mcp: template.externals?.mcp ?? base.externals?.mcp ?? [],
+    },
+    program: template.program ?? base.program,
+    injections: {
+      ...(base.injections ?? { default_profile: null, profiles: {}, rules: [] }),
+      ...(template.injections ?? {}),
+      profiles: {
+        ...(base.injections?.profiles ?? {}),
+        ...(template.injections?.profiles ?? {}),
+      },
+      rules: template.injections?.rules ?? base.injections?.rules ?? [],
+    },
   };
 
   const tmuxEnabled = runner === "direct" ? false : Boolean(merged.tmux.enabled);
@@ -248,7 +355,7 @@ export async function cmdInit(args: {
 }): Promise<void> {
   if (args.workspace) {
     const workspace = resolve(args.workspace);
-    await withWorkspaceLock(workspace, "tns init", async () => {
+    await withResourceLocks(workspace, ["workspace", "config", "state"], "tns init", async () => {
       const taskPath = resolve(args.task || `${workspace}/task.md`);
       const configPath = resolve(args.config || `${workspace}/tns_config.json`);
       const templateName = args.template || "blank";
@@ -291,7 +398,7 @@ export async function cmdInit(args: {
     throw new Error("init requires --workspace for a new workspace or --config for an existing config");
   }
   const config = loadConfig(args.config);
-  await withWorkspaceLock(config.workspace, "tns init", async () => {
+  await withResourceLocks(config.workspace, ["workspace", "config", "state"], "tns init", async () => {
     await initState(config);
     console.log(`initialized TNS in ${config.workspace}/.tns`);
   });

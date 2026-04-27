@@ -5,7 +5,7 @@ import { readJson, writeJson } from "../lib/fs.js";
 import { parsePlanSections } from "../core/plan-parser.js";
 import { ensureSectionDefaults } from "../core/sections.js";
 import type { Section } from "../types.js";
-import { withWorkspaceLock } from "../lib/lock.js";
+import { withResourceLocks } from "../lib/lock.js";
 
 export async function cmdPlanImport(args: { config: string; plan_file?: string; planFile?: string; merge: boolean }): Promise<void> {
   const config = loadConfig(args.config);
@@ -23,7 +23,7 @@ export async function cmdPlanImport(args: { config: string; plan_file?: string; 
   }
 
   const newSections = parsePlanSections(planText);
-  await withWorkspaceLock(config.workspace, "tns plan-import", async () => {
+  await withResourceLocks(config.workspace, ["workspace", "config", "state"], "tns plan-import", async () => {
     const paths = await ensureInitialized(config);
 
     if (args.merge) {

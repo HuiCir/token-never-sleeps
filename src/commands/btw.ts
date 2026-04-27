@@ -3,7 +3,7 @@ import { loadConfig } from "../lib/config.js";
 import { pathExists, readJson } from "../lib/fs.js";
 import { currentWindow, iso, utcNow } from "../lib/time.js";
 import { statePaths } from "../core/state.js";
-import { pidIsAlive, readWorkspaceLock } from "../lib/lock.js";
+import { pidIsAlive, readAllResourceLocks, readWorkspaceLock } from "../lib/lock.js";
 import type { ActivityEvent, ArtifactRecord, ExplorationState, FreezeRecord, Manifest, ReviewRecord, Section, TmuxStatus } from "../types.js";
 import { ensureSectionDefaults, selectSection } from "../core/sections.js";
 import { loadRuntime } from "../core/runtime.js";
@@ -88,9 +88,11 @@ export async function cmdBtw(args: BtwArgs): Promise<void> {
   const freeze = await readJson<FreezeRecord>(paths.freeze);
   const tmux = await readJson<TmuxStatus>(paths.tmux);
   const exploration = await readJson<ExplorationState>(paths.exploration);
+  const diagnostics = await readJson<Record<string, unknown>>(paths.diagnostics);
   const runtime = await loadRuntime(paths);
   const approvals = await loadApprovals(paths);
   const lock = await readWorkspaceLock(paths.workspace);
+  const resourceLocks = await readAllResourceLocks(paths.workspace);
   const recentActivity = await readJsonlTail<ActivityEvent>(paths.activity, eventLimit);
 
   const runtimeHeartbeatAt = runtime?.heartbeat_at ? Date.parse(runtime.heartbeat_at) : NaN;
@@ -142,6 +144,10 @@ export async function cmdBtw(args: BtwArgs): Promise<void> {
       ...lock,
       stale: lockStale,
     } : null,
+    resource_locks: Object.fromEntries(Object.entries(resourceLocks).map(([name, info]) => [name, {
+      ...info,
+      stale: !pidIsAlive(info.pid),
+    }])),
     task: {
       total_sections: sections.length,
       counts,
@@ -154,6 +160,24 @@ export async function cmdBtw(args: BtwArgs): Promise<void> {
     approvals: {
       granted: Object.keys(approvals.granted).sort(),
       pending: Object.keys(approvals.pending).sort(),
+    },
+    diagnostics: diagnostics ? {
+      updated_at: diagnostics.updated_at ?? null,
+      last_error: diagnostics.last_error ?? null,
+      last_preflight_failures: Array.isArray(diagnostics.last_preflight)
+        ? diagnostics.last_preflight.filter((item: Record<string, unknown>) => item.ok === false).map((item: Record<string, unknown>) => item.id)
+        : [],
+      last_validator_failures: Array.isArray(diagnostics.last_validator_results)
+        ? diagnostics.last_validator_results.filter((item: Record<string, unknown>) => item.ok === false).map((item: Record<string, unknown>) => item.id)
+        : [],
+    } : null,
+    compiled_program: {
+      path: paths.compiled_program,
+      exists: await pathExists(paths.compiled_program),
+    },
+    compiler_review: {
+      path: paths.compiler_review,
+      exists: await pathExists(paths.compiler_review),
     },
     exploration: exploration ? {
       window_index: exploration.window_index,

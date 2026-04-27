@@ -21,6 +21,16 @@ export function statePaths(config: TnsConfig): StatePaths {
     runtime: `${stateDir}/runtime.json`,
     approvals: `${stateDir}/approvals.json`,
     exploration: `${stateDir}/exploration.json`,
+    diagnostics: `${stateDir}/diagnostics.json`,
+    command_runs: `${stateDir}/command-runs.jsonl`,
+    section_outputs_dir: `${stateDir}/section-outputs`,
+    compiled_dir: `${stateDir}/compiled`,
+    compiled_program: `${stateDir}/compiled/program.json`,
+    compiler_review: `${stateDir}/compiled/compiler-review.json`,
+    lock_events: `${stateDir}/lock-events.jsonl`,
+    tool_events: `${stateDir}/tool-events.jsonl`,
+    injection_events: `${stateDir}/injection-events.jsonl`,
+    agent_runs_dir: `${stateDir}/agent-runs`,
     hook_events: `${stateDir}/hook-events.jsonl`,
     runner_log: `${stateDir}/runner.log`,
   };
@@ -62,6 +72,13 @@ export async function initState(config: TnsConfig): Promise<void> {
     last_summary: "",
     last_taskx_path: null,
     updated_at: null,
+  });
+  await writeJson(paths.diagnostics, {
+    updated_at: null,
+    last_preflight: [],
+    last_validator_results: [],
+    last_command_runs: [],
+    last_error: null,
   });
   await removePath(paths.freeze);
   await writeJson(paths.tmux, {});

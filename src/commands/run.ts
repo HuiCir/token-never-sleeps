@@ -1,4 +1,4 @@
-import { loadConfig, workflowSettings, attemptsSettings, explorationSettings } from "../lib/config.js";
+import { loadConfig, workflowSettings, attemptsSettings, explorationSettings, outputSettings, policySettings } from "../lib/config.js";
 import { statePaths, ensureInitialized, loadManifest } from "../core/state.js";
 import { readJson, writeJson, appendJsonl, pathExists, removePath, resolvePath as resolveFsPath } from "../lib/fs.js";
 import { iso, utcNow, sleep } from "../lib/time.js";
@@ -9,13 +9,19 @@ import { firstMatchingTransition, applyTransitionToSection } from "../core/workf
 import { appendHandoff } from "../core/handoff.js";
 import { rebuildArtifactIndex } from "../core/artifacts.js";
 import type { Section, ExecutorResult, VerifierResult, ReviewRecord, TnsConfig, ExplorationResult, ExplorationState } from "../types.js";
-import { withWorkspaceLock } from "../lib/lock.js";
+import { withResourceLocks } from "../lib/lock.js";
 import { beginRuntime, endRuntime, heartbeatRuntime, recoverRuntimeIfInterrupted } from "../core/runtime.js";
 import { currentWindow } from "../lib/time.js";
 import { loadApprovals, recordApprovalRequest } from "../core/approvals.js";
 import { missingApprovalTag, permissionSettings, resolvePermissionProfile, type ResolvedPermissionProfile } from "../lib/permissions.js";
 import { relative, resolve as resolvePath } from "node:path";
 import { readFile } from "node:fs/promises";
+import { applyPolicyAction, policyActionFor } from "../lib/policy.js";
+import { runStageCommandHooks } from "../core/command-bridge.js";
+import { runStageValidators, runWorkspacePreflight } from "../core/validators.js";
+import { writeSectionOutput } from "../core/section-output.js";
+import type { CommandRunResult, ValidatorResult } from "../types.js";
+import { preparePluginSandbox, resolveInjectionProfile } from "../lib/injections.js";
 
 interface RunLoopResult {
   ran: boolean;
@@ -40,6 +46,30 @@ function clearAgentRuntimeFields() {
   };
 }
 
+function summarizeFailures<T extends { id: string; message: string }>(items: T[]): string {
+  return items.map((item) => `${item.id}: ${item.message}`).join("; ");
+}
+
+async function persistSectionOutputIfEnabled(
+  config: TnsConfig,
+  paths: ReturnType<typeof statePaths>,
+  section: Section,
+  stepResults: { node_id: string; payload: Record<string, unknown>; usage: unknown }[],
+  validatorResults: ValidatorResult[],
+  commandRuns: CommandRunResult[]
+): Promise<void> {
+  if (!outputSettings(config).write_section_outputs) {
+    return;
+  }
+  await writeSectionOutput(
+    paths,
+    section,
+    stepResults.map((item) => ({ node_id: item.node_id, payload: item.payload, usage: item.usage as Record<string, unknown> })),
+    validatorResults,
+    commandRuns
+  );
+}
+
 function ensureFilesTouchedStayInWorkspace(workspace: string, filesTouched: string[]): void {
   const root = resolvePath(workspace);
   for (const file of filesTouched) {
@@ -54,7 +84,7 @@ function ensureFilesTouchedStayInWorkspace(workspace: string, filesTouched: stri
 
 export async function cmdRun(args: { config: string; once?: boolean; poll_seconds?: number }): Promise<void> {
   const config = loadConfig(args.config);
-  await withWorkspaceLock(config.workspace, "tns run", async () => {
+  await withResourceLocks(config.workspace, ["workspace", "runner", "state"], "tns run", async () => {
     const paths = await ensureInitialized(config, { autoInit: true });
     const manifest = await loadManifest(paths);
     await recoverRuntimeIfInterrupted(paths);
@@ -140,6 +170,7 @@ function resolveDefaultPermissionProfile(config: TnsConfig): ResolvedPermissionP
     disallowed_tools: Array.from(new Set(disallowed)),
     approval_tag: profile.requires_approval ?? null,
     workspace_only: profile.workspace_only ?? true,
+    restricted_paths: Array.isArray(profile.restricted_paths) ? profile.restricted_paths.map(String) : [],
   };
 }
 
@@ -217,7 +248,10 @@ async function runExplorationPass(config: TnsConfig, paths: ReturnType<typeof st
     return { ran: false };
   }
 
-  const prompt = await buildExplorationPrompt(config, paths, sections, settings.allow_taskx, settings.taskx_filename, roundsRun + 1, settings.max_rounds_per_window, permissionProfile);
+    const prompt = await buildExplorationPrompt(config, paths, sections, settings.allow_taskx, settings.taskx_filename, roundsRun + 1, settings.max_rounds_per_window, permissionProfile);
+  const injectionProfile = resolveInjectionProfile(config, "exploration", null, "exploration");
+  const runId = `exploration-${Date.now()}`;
+  const pluginSandbox = await preparePluginSandbox(paths, injectionProfile, runId);
   await appendJsonl(paths.activity, {
     event: "exploration_start",
     at: iso(utcNow()),
@@ -240,6 +274,17 @@ async function runExplorationPass(config: TnsConfig, paths: ReturnType<typeof st
           agent_deadline_at: snapshot.deadline_at,
           sleep_until: null,
         });
+      },
+      plugin_dir: pluginSandbox.plugin_root,
+      extra_add_dirs: pluginSandbox.add_dirs,
+      paths,
+      metadata: {
+        run_id: runId,
+        agent_mode: "exploration",
+        section_id: "exploration",
+        step: "exploration",
+        injection_profile: injectionProfile.profile_name,
+        injected_skills: [...pluginSandbox.skills, ...pluginSandbox.external_skill_paths.map((item) => item.split("/").pop() || item)],
       },
       permissions: {
         permission_mode: permissionProfile.permission_mode,
@@ -344,10 +389,43 @@ async function normalizeFreeze(paths: ReturnType<typeof statePaths>): Promise<{ 
 }
 
 async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>): Promise<RunLoopResult> {
+  const policies = policySettings(config);
   const freezeState = await normalizeFreeze(paths);
   if (freezeState.blocked) {
     await heartbeatRuntime(paths, { current_section: "", current_step: "", sleep_until: freezeState.nextWakeAt ?? null, ...clearAgentRuntimeFields() });
     return { ran: false, nextWakeAt: freezeState.nextWakeAt ?? null };
+  }
+
+  const preflightCommands = await runStageCommandHooks(paths, config, "preflight", null, "preflight");
+  const failedPreflightCommands = preflightCommands.filter((item) => !item.ok);
+  if (failedPreflightCommands.length > 0) {
+    const outcome = await applyPolicyAction(
+      paths,
+      policyActionFor(policies, "command_failure"),
+      null,
+      summarizeFailures(failedPreflightCommands.map((item) => ({ id: item.id, message: item.stderr || `exit ${item.exit_code}` }))),
+      { stage: "preflight", command_sets: failedPreflightCommands.map((item) => item.id) }
+    );
+    if (outcome === "failed") {
+      throw new Error(`preflight command hooks failed: ${failedPreflightCommands.map((item) => item.id).join(", ")}`);
+    }
+    return { ran: false };
+  }
+
+  const preflight = await runWorkspacePreflight(paths, config);
+  const preflightFailures = preflight.filter((item) => !item.ok);
+  if (preflightFailures.length > 0) {
+    const outcome = await applyPolicyAction(
+      paths,
+      policyActionFor(policies, "preflight_failure"),
+      null,
+      summarizeFailures(preflightFailures),
+      { stage: "preflight", validator_ids: preflightFailures.map((item) => item.id) }
+    );
+    if (outcome === "failed") {
+      throw new Error(`preflight failed: ${summarizeFailures(preflightFailures)}`);
+    }
+    return { ran: false };
   }
 
   // Recover in-progress sections
@@ -411,6 +489,8 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
     return { ran: false };
   }
   const stepResults: { node_id: string; payload: Record<string, unknown>; usage: unknown }[] = [];
+  const validatorResults: ValidatorResult[] = [];
+  const commandRuns: CommandRunResult[] = [];
   const priorResults: Record<string, Record<string, unknown>> = {};
 
   selected.status = "in_progress";
@@ -464,6 +544,46 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
         return { ran: false };
       }
 
+      const preCommands = await runStageCommandHooks(paths, config, "pre_step", selected, currentStep);
+      commandRuns.push(...preCommands);
+      const failedPreCommands = preCommands.filter((item) => !item.ok);
+      if (failedPreCommands.length > 0) {
+        const outcome = await applyPolicyAction(
+          paths,
+          policyActionFor(policies, "command_failure"),
+          selected,
+          summarizeFailures(failedPreCommands.map((item) => ({ id: item.id, message: item.stderr || `exit ${item.exit_code}` }))),
+          { stage: "pre_step", step: currentStep, command_sets: failedPreCommands.map((item) => item.id) }
+        );
+        await writeJson(paths.sections, sections);
+        await persistSectionOutputIfEnabled(config, paths, selected, stepResults, validatorResults, commandRuns);
+        await heartbeatRuntime(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+        if (outcome === "failed") {
+          throw new Error(`pre-step command hook failed: ${failedPreCommands.map((item) => item.id).join(", ")}`);
+        }
+        return { ran: false };
+      }
+
+      const preValidators = await runStageValidators(paths, config, "pre_step", selected, currentStep);
+      validatorResults.push(...preValidators);
+      const failedPreValidators = preValidators.filter((item) => !item.ok);
+      if (failedPreValidators.length > 0) {
+        const outcome = await applyPolicyAction(
+          paths,
+          policyActionFor(policies, "validator_failure", "pre_step"),
+          selected,
+          summarizeFailures(failedPreValidators),
+          { stage: "pre_step", step: currentStep, validator_ids: failedPreValidators.map((item) => item.id) }
+        );
+        await writeJson(paths.sections, sections);
+        await persistSectionOutputIfEnabled(config, paths, selected, stepResults, validatorResults, commandRuns);
+        await heartbeatRuntime(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+        if (outcome === "failed") {
+          throw new Error(`pre-step validators failed: ${failedPreValidators.map((item) => item.id).join(", ")}`);
+        }
+        return { ran: false };
+      }
+
       await appendJsonl(paths.activity, {
         event: "agent_start",
         at: iso(utcNow()),
@@ -477,6 +597,10 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
 
       const schema = schemaByName(node.schema || node.id);
       const prompt = await buildPrompt(paths, selected, node, priorResults, permissionProfile);
+      const mode = currentStep === "verifier" ? "verifier" : "executor";
+      const injectionProfile = resolveInjectionProfile(config, mode, selected, currentStep);
+      const runId = `${selected.id}-${currentStep}-${Date.now()}`;
+      const pluginSandbox = await preparePluginSandbox(paths, injectionProfile, runId);
 
       let result: { payload: Record<string, unknown>; usage: Record<string, unknown> };
       try {
@@ -491,6 +615,17 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
               agent_deadline_at: snapshot.deadline_at,
               sleep_until: null,
             });
+          },
+          plugin_dir: pluginSandbox.plugin_root,
+          extra_add_dirs: pluginSandbox.add_dirs,
+          paths,
+          metadata: {
+            run_id: runId,
+            agent_mode: mode,
+            section_id: selected.id,
+            step: currentStep,
+            injection_profile: injectionProfile.profile_name,
+            injected_skills: [...pluginSandbox.skills, ...pluginSandbox.external_skill_paths.map((item) => item.split("/").pop() || item)],
           },
           permissions: {
             permission_mode: permissionProfile.permission_mode,
@@ -539,7 +674,24 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
       const filesTouched = Array.isArray(payload.files_touched)
         ? payload.files_touched.filter((item): item is string => typeof item === "string")
         : [];
-      ensureFilesTouchedStayInWorkspace(paths.workspace, filesTouched);
+      try {
+        ensureFilesTouchedStayInWorkspace(paths.workspace, filesTouched);
+      } catch (error: unknown) {
+        const outcome = await applyPolicyAction(
+          paths,
+          policyActionFor(policies, "outside_workspace_violation"),
+          selected,
+          String(error),
+          { stage: "post_step", step: currentStep }
+        );
+        await writeJson(paths.sections, sections);
+        await persistSectionOutputIfEnabled(config, paths, selected, stepResults, validatorResults, commandRuns);
+        await heartbeatRuntime(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+        if (outcome === "failed") {
+          throw error;
+        }
+        return { ran: false };
+      }
       priorResults[currentStep] = payload;
       stepResults.push({ node_id: currentStep, payload, usage });
 
@@ -559,6 +711,50 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
         current_step: currentStep,
         ...clearAgentRuntimeFields(),
       });
+
+      const postCommands = await runStageCommandHooks(paths, config, "post_step", selected, currentStep);
+      commandRuns.push(...postCommands);
+      const failedPostCommands = postCommands.filter((item) => !item.ok);
+      if (failedPostCommands.length > 0) {
+        sections = (await readJson<Section[]>(paths.sections)) || [];
+        const sectionForPolicy = sections.find((s) => s.id === selected.id) || selected;
+        const outcome = await applyPolicyAction(
+          paths,
+          policyActionFor(policies, "command_failure"),
+          sectionForPolicy,
+          summarizeFailures(failedPostCommands.map((item) => ({ id: item.id, message: item.stderr || `exit ${item.exit_code}` }))),
+          { stage: "post_step", step: currentStep, command_sets: failedPostCommands.map((item) => item.id) }
+        );
+        await writeJson(paths.sections, sections);
+        await persistSectionOutputIfEnabled(config, paths, sectionForPolicy, stepResults, validatorResults, commandRuns);
+        await heartbeatRuntime(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+        if (outcome === "failed") {
+          throw new Error(`post-step command hook failed: ${failedPostCommands.map((item) => item.id).join(", ")}`);
+        }
+        return { ran: false };
+      }
+
+      const postValidators = await runStageValidators(paths, config, "post_step", selected, currentStep);
+      validatorResults.push(...postValidators);
+      const failedPostValidators = postValidators.filter((item) => !item.ok);
+      if (failedPostValidators.length > 0) {
+        sections = (await readJson<Section[]>(paths.sections)) || [];
+        const sectionForPolicy = sections.find((s) => s.id === selected.id) || selected;
+        const outcome = await applyPolicyAction(
+          paths,
+          policyActionFor(policies, "validator_failure", "post_step"),
+          sectionForPolicy,
+          summarizeFailures(failedPostValidators),
+          { stage: "post_step", step: currentStep, validator_ids: failedPostValidators.map((item) => item.id) }
+        );
+        await writeJson(paths.sections, sections);
+        await persistSectionOutputIfEnabled(config, paths, sectionForPolicy, stepResults, validatorResults, commandRuns);
+        await heartbeatRuntime(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+        if (outcome === "failed") {
+          throw new Error(`post-step validators failed: ${failedPostValidators.map((item) => item.id).join(", ")}`);
+        }
+        return { ran: false };
+      }
 
       sections = (await readJson<Section[]>(paths.sections)) || [];
       const transition = firstMatchingTransition(payload, node);
@@ -587,6 +783,27 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
       updateSection(sections, selected.id, { status: "needs_fix", last_review: "Workflow exceeded max_steps_per_run." });
       await writeJson(paths.sections, sections);
     }
+    const finalForValidation = sections.find((s) => s.id === selected.id) || selected;
+    const postRunValidators = await runStageValidators(paths, config, "post_run", finalForValidation, finalForValidation.current_step || "post_run");
+    validatorResults.push(...postRunValidators);
+    const failedPostRunValidators = postRunValidators.filter((item) => !item.ok);
+    if (failedPostRunValidators.length > 0) {
+      const outcome = await applyPolicyAction(
+        paths,
+        policyActionFor(policies, "validator_failure", "post_run"),
+        finalForValidation,
+        summarizeFailures(failedPostRunValidators),
+        { stage: "post_run", validator_ids: failedPostRunValidators.map((item) => item.id) }
+      );
+      await writeJson(paths.sections, sections);
+      await persistSectionOutputIfEnabled(config, paths, finalForValidation, stepResults, validatorResults, commandRuns);
+      await heartbeatRuntime(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+      if (outcome === "failed") {
+        throw new Error(`post-run validators failed: ${failedPostRunValidators.map((item) => item.id).join(", ")}`);
+      }
+      return { ran: false };
+    }
+    await persistSectionOutputIfEnabled(config, paths, finalForValidation, stepResults, validatorResults, commandRuns);
   } catch (exc: unknown) {
     console.error(`Error in run loop: ${exc}`);
     await markRunError(paths, exc);
@@ -610,6 +827,12 @@ async function markRunError(paths: ReturnType<typeof statePaths>, exc: unknown):
     changed = true;
   }
   if (changed) await writeJson(paths.sections, sections);
+  const diagnostics = await readJson<Record<string, unknown>>(paths.diagnostics, {});
+  await writeJson(paths.diagnostics, {
+    ...(diagnostics ?? {}),
+    updated_at: iso(utcNow()),
+    last_error: message,
+  });
   await appendJsonl(paths.activity, { event: "run_error", at: iso(utcNow()), error: message, recovered_sections: changed });
   await heartbeatRuntime(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
 }
@@ -623,10 +846,18 @@ async function buildPrompt(
 ): Promise<string> {
   const manifestData = await readJson<{ product_doc: string }>(paths.manifest);
   const body = section.body || "(empty)";
+  const compiledProgramLine = await pathExists(paths.compiled_program)
+    ? `Compiled orchestration program: ${paths.compiled_program}\nRead it before acting. Treat it as the authoritative contract for lifecycle, bridge files, permissions, validators, command hooks, externals, and workspace boundaries.\n`
+    : "";
+  const compilerReviewLine = await pathExists(paths.compiler_review)
+    ? `Compiler review: ${paths.compiler_review}\nRead it before acting. Treat it as the latest structured recommendation layer on top of the compiled program.\n`
+    : "";
 
   const base = `Tracked document: ${manifestData?.product_doc || ""}
 Section list: ${paths.sections}
 Workspace root: ${paths.workspace}
+${compiledProgramLine}
+${compilerReviewLine}
 
 Target section:
 - id: ${section.id}
@@ -638,6 +869,7 @@ Permission profile:
 - profile: ${permissionProfile.profile_name}
 - mode: ${permissionProfile.permission_mode}
 - workspace_only: ${permissionProfile.workspace_only ? "true" : "false"}
+- restricted_paths: ${permissionProfile.restricted_paths.join(", ") || paths.workspace}
 - auto-approved tools: ${permissionProfile.allowed_tools.join(", ") || "(none)"}
 
 Stay inside the workspace root. Do not intentionally access files outside ${paths.workspace}. If progress would require a command family outside the current permission profile, stop and report the missing command family as a blocker instead of guessing.
@@ -691,6 +923,7 @@ Permission profile:
 - profile: ${permissionProfile.profile_name}
 - mode: ${permissionProfile.permission_mode}
 - workspace_only: ${permissionProfile.workspace_only ? "true" : "false"}
+- restricted_paths: ${permissionProfile.restricted_paths.join(", ") || paths.workspace}
 - auto-approved tools: ${permissionProfile.allowed_tools.join(", ") || "(none)"}
 
 Rules:

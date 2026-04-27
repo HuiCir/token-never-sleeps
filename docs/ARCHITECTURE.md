@@ -1,6 +1,6 @@
-# npm-tns Architecture
+# Token Never Sleeps Architecture
 
-`npm-tns` is a minimal TypeScript package for running the TNS external orchestration loop locally.
+`token-never-sleeps` is the canonical TypeScript package for running the TNS external orchestration loop locally.
 
 ## Included
 

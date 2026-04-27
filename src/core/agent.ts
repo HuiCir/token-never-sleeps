@@ -3,7 +3,8 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getEffectivePermissionMode, monitorSettings } from "../lib/config.js";
 import { makeAgentError } from "../lib/errors.js";
-import type { TnsConfig, ExecutorResult, VerifierResult, ExplorationResult, AgentOutput, AgentUsage } from "../types.js";
+import { appendJsonl, writeJson } from "../lib/fs.js";
+import type { StatePaths, TnsConfig, ExecutorResult, VerifierResult, ExplorationResult, CompilerResult, AgentOutput, AgentUsage, ToolUseEvent } from "../types.js";
 import which from "which";
 const whichSync = which.sync;
 
@@ -23,6 +24,17 @@ interface RunAgentOptions {
     permission_mode?: string;
     allowed_tools?: string[];
     disallowed_tools?: string[];
+  };
+  plugin_dir?: string;
+  extra_add_dirs?: string[];
+  paths?: StatePaths;
+  metadata?: {
+    run_id?: string;
+    agent_mode?: string;
+    section_id?: string;
+    step?: string;
+    injection_profile?: string | null;
+    injected_skills?: string[];
   };
 }
 
@@ -69,10 +81,71 @@ export const EXPLORATION_SCHEMA = {
   required: ["outcome", "summary", "handoff_note", "files_touched", "checks_run", "blocker", "taskx_created", "taskx_path"],
 };
 
+export const COMPILER_SCHEMA = {
+  type: "object",
+  properties: {
+    summary: { type: "string" },
+    confidence: { type: "string", enum: ["high", "medium", "low"] },
+    findings: { type: "array", items: { type: "string" } },
+    blockers: { type: "array", items: { type: "string" } },
+    files_touched: { type: "array", items: { type: "string" } },
+    checks_run: { type: "array", items: { type: "string" } },
+    patch: {
+      type: "object",
+      properties: {
+        preflight: {
+          type: "object",
+          properties: {
+            required_files: { type: "array", items: { type: "string" } },
+            required_directories: { type: "array", items: { type: "string" } },
+          },
+        },
+        validators: { type: "array", items: { type: "object" } },
+        command_bridge: {
+          type: "object",
+          properties: {
+            command_sets: { type: "object" },
+            hooks: { type: "array", items: { type: "object" } },
+          },
+        },
+        policy: { type: "object" },
+        permissions: {
+          type: "object",
+          properties: {
+            default_profile: { type: "string" },
+            profiles: { type: "object" },
+            section_profiles: { type: "array", items: { type: "object" } },
+          },
+        },
+        externals: {
+          type: "object",
+          properties: {
+            tools: { type: "array", items: { type: "object" } },
+            skills: { type: "array", items: { type: "object" } },
+            mcp: { type: "array", items: { type: "object" } },
+          },
+        },
+        program: {
+          type: "object",
+          properties: {
+            entry: { type: "string" },
+            context: { type: "object" },
+            states: { type: "array", items: { type: "object" } },
+            max_steps: { type: "number" },
+          },
+        },
+      },
+      required: ["preflight", "validators", "command_bridge", "policy", "permissions", "externals", "program"],
+    },
+  },
+  required: ["summary", "confidence", "findings", "blockers", "files_touched", "checks_run", "patch"],
+};
+
 export function schemaByName(name: string): Record<string, unknown> {
   if (name === "executor") return EXECUTOR_SCHEMA;
   if (name === "verifier") return VERIFIER_SCHEMA;
   if (name === "exploration") return EXPLORATION_SCHEMA;
+  if (name === "compiler") return COMPILER_SCHEMA;
   return {};
 }
 
@@ -141,18 +214,19 @@ export function buildCommonClaudeArgs(
     permission_mode?: string;
     allowed_tools?: string[];
     disallowed_tools?: string[];
-  }
+  },
+  pluginDirOverride?: string,
+  extraAddDirs?: string[]
 ): string[] {
   const claude = requireClaude();
-  const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+  const pluginRoot = pluginDirOverride || resolve(dirname(fileURLToPath(import.meta.url)), "../..");
   const permissionMode = getEffectivePermissionMode(permissions?.permission_mode ?? config.permission_mode ?? "default");
+  const addDirs = Array.from(new Set([resolve(workspace), pluginRoot, ...(extraAddDirs ?? []).map((item) => resolve(item))]));
   const args: string[] = [
     claude,
     "-p",
     "--plugin-dir",
     pluginRoot,
-    "--add-dir",
-    resolve(workspace),
     "--permission-mode",
     permissionMode,
     "--effort",
@@ -160,6 +234,9 @@ export function buildCommonClaudeArgs(
     "--output-format",
     "json",
   ];
+  for (const dir of addDirs) {
+    args.push("--add-dir", dir);
+  }
   if (permissions?.allowed_tools && permissions.allowed_tools.length > 0) {
     args.push("--allowedTools", permissions.allowed_tools.join(","));
   }
@@ -172,6 +249,84 @@ export function buildCommonClaudeArgs(
   return args;
 }
 
+function extractToolUseEvents(input: unknown, acc: Array<Record<string, unknown>> = []): Array<Record<string, unknown>> {
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      extractToolUseEvents(item, acc);
+    }
+    return acc;
+  }
+  if (!input || typeof input !== "object") {
+    return acc;
+  }
+  const record = input as Record<string, unknown>;
+  if (typeof record.type === "string" && (record.type.includes("tool") || record.type === "server_tool_use")) {
+    acc.push(record);
+  }
+  for (const value of Object.values(record)) {
+    extractToolUseEvents(value, acc);
+  }
+  return acc;
+}
+
+function extractPermissionDenials(input: unknown): Array<Record<string, unknown>> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return [];
+  }
+  const record = input as Record<string, unknown>;
+  return Array.isArray(record.permission_denials)
+    ? record.permission_denials.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    : [];
+}
+
+async function persistAgentRun(paths: StatePaths, metadata: RunAgentOptions["metadata"], outer: Record<string, unknown>, agent: string, prompt: string, args: string[]): Promise<void> {
+  const runId = metadata?.run_id || `${Date.now()}-${agent}`;
+  await writeJson(`${paths.agent_runs_dir}/${runId}.json`, {
+    run_id: runId,
+    at: new Date().toISOString(),
+    agent,
+    mode: metadata?.agent_mode ?? "",
+    section_id: metadata?.section_id ?? "",
+    step: metadata?.step ?? "",
+    injection_profile: metadata?.injection_profile ?? null,
+    injected_skills: metadata?.injected_skills ?? [],
+    claude_args: args.slice(1),
+    prompt,
+    raw: outer,
+  });
+  const toolUses = extractToolUseEvents(outer);
+  for (const item of toolUses) {
+    const event: ToolUseEvent = {
+      at: new Date().toISOString(),
+      agent,
+      run_id: runId,
+      section_id: metadata?.section_id,
+      step: metadata?.step,
+      type: String(item.type ?? "tool"),
+      name: typeof item.name === "string" ? item.name : undefined,
+      id: typeof item.id === "string" ? item.id : undefined,
+      raw: item,
+    };
+    await appendJsonl(paths.tool_events, event as unknown as Record<string, unknown>);
+  }
+  const denials = extractPermissionDenials(outer);
+  for (const item of denials) {
+    const event: ToolUseEvent = {
+      at: new Date().toISOString(),
+      agent,
+      run_id: runId,
+      section_id: metadata?.section_id,
+      step: metadata?.step,
+      type: "permission_denial",
+      name: typeof item.tool_name === "string" ? item.tool_name : undefined,
+      id: typeof item.tool_use_id === "string" ? item.tool_use_id : undefined,
+      denied: true,
+      raw: item,
+    };
+    await appendJsonl(paths.tool_events, event as unknown as Record<string, unknown>);
+  }
+}
+
 export async function runAgent(
   config: TnsConfig,
   workspace: string,
@@ -180,7 +335,7 @@ export async function runAgent(
   prompt: string,
   options?: RunAgentOptions
 ): Promise<AgentOutput> {
-  const args = buildCommonClaudeArgs(config, workspace, options?.permissions);
+  const args = buildCommonClaudeArgs(config, workspace, options?.permissions, options?.plugin_dir, options?.extra_add_dirs);
   args.push("--agent", agent, "--json-schema", JSON.stringify(schema), prompt);
   const monitor = monitorSettings(config);
   const heartbeatMs = monitor.heartbeat_seconds * 1000;
@@ -200,6 +355,7 @@ export async function runAgent(
       cwd: workspace,
       encoding: "utf8",
       captureOutput: true,
+      stdin: "ignore",
       timeout: undefined,
       reject: false,
     }) as ReturnType<typeof execa>;
@@ -258,21 +414,25 @@ export async function runAgent(
     throw new Error(`[${agent}] returned invalid Claude JSON: ${(proc.stdout || "").slice(0, 400)}`);
   }
 
+  if (options?.paths) {
+    await persistAgentRun(options.paths, options.metadata, outer, agent, prompt, args);
+  }
+
   if (outer.is_error) {
     throw new Error(outer.result as string || outer.error as string || `[${agent}] returned an error`);
   }
 
   const resultText = (outer.result as string) || "";
-  let payload: ExecutorResult | VerifierResult | ExplorationResult;
+  let payload: ExecutorResult | VerifierResult | ExplorationResult | CompilerResult;
 
   try {
     payload = JSON.parse(resultText) as unknown as ExecutorResult;
   } catch {
     const structured = outer.structured_output;
     if (structured && typeof structured === "object" && Object.keys(structured).length > 0) {
-      payload = structured as ExecutorResult | VerifierResult | ExplorationResult;
+      payload = structured as ExecutorResult | VerifierResult | ExplorationResult | CompilerResult;
     } else {
-      payload = await normalizeSchemaResult(config, workspace, schema, resultText) as unknown as ExecutorResult | VerifierResult | ExplorationResult;
+      payload = await normalizeSchemaResult(config, workspace, schema, resultText) as unknown as ExecutorResult | VerifierResult | ExplorationResult | CompilerResult;
     }
   }
   const schemaErrors = validatePayloadSchema(payload, schema);

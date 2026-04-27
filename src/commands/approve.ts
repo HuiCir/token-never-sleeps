@@ -2,12 +2,12 @@ import { appendJsonl, readJson, removePath } from "../lib/fs.js";
 import { loadConfig } from "../lib/config.js";
 import { ensureInitialized } from "../core/state.js";
 import { grantApproval, revokeApproval } from "../core/approvals.js";
-import { withWorkspaceLock } from "../lib/lock.js";
+import { withResourceLocks } from "../lib/lock.js";
 import { iso, utcNow } from "../lib/time.js";
 
 export async function cmdApprove(args: { config: string; tag: string; note?: string }): Promise<void> {
   const config = loadConfig(args.config);
-  await withWorkspaceLock(config.workspace, "tns approve", async () => {
+  await withResourceLocks(config.workspace, ["workspace", "control", "state"], "tns approve", async () => {
     const paths = await ensureInitialized(config, { autoInit: true });
     await grantApproval(paths, args.tag, args.note);
     const freeze = await readJson<Record<string, unknown>>(paths.freeze);
@@ -30,7 +30,7 @@ export async function cmdApprove(args: { config: string; tag: string; note?: str
 
 export async function cmdRevoke(args: { config: string; tag: string }): Promise<void> {
   const config = loadConfig(args.config);
-  await withWorkspaceLock(config.workspace, "tns revoke", async () => {
+  await withResourceLocks(config.workspace, ["workspace", "control", "state"], "tns revoke", async () => {
     const paths = await ensureInitialized(config, { autoInit: true });
     await revokeApproval(paths, args.tag);
     await appendJsonl(paths.activity, {

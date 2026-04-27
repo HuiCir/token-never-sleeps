@@ -4,7 +4,7 @@ import { execa } from "execa";
 import { writeJson } from "../lib/fs.js";
 import { probeTmux, tmuxBaseArgs, tmuxUnavailableStatus } from "../lib/platform.js";
 import { iso, utcNow } from "../lib/time.js";
-import { withWorkspaceLock } from "../lib/lock.js";
+import { withResourceLocks } from "../lib/lock.js";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,7 +29,7 @@ async function windowExists(tmux: string, baseArgs: string[], sessionName: strin
 
 export async function cmdRunTmx(args: { config: string; poll_seconds?: number; pollSeconds?: number; restart?: boolean; once?: boolean }): Promise<void> {
   const config = loadConfig(args.config);
-  await withWorkspaceLock(config.workspace, "tns run-tmux", async () => {
+  await withResourceLocks(config.workspace, ["workspace", "runner", "tmux", "state"], "tns run-tmux", async () => {
     const paths = await ensureInitialized(config, { autoInit: true });
     const settings = tmuxSettings(config);
 

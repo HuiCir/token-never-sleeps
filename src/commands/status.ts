@@ -9,7 +9,7 @@ import type { Section } from "../types.js";
 import { probeTmux, tmuxPath, tmuxUnavailableStatus } from "../lib/platform.js";
 import { writeJson } from "../lib/fs.js";
 import { iso, utcNow } from "../lib/time.js";
-import { pidIsAlive, readWorkspaceLock } from "../lib/lock.js";
+import { pidIsAlive, readAllResourceLocks, readWorkspaceLock } from "../lib/lock.js";
 import { loadRuntime } from "../core/runtime.js";
 import { loadApprovals } from "../core/approvals.js";
 import type { ExplorationState } from "../types.js";
@@ -65,9 +65,11 @@ export async function cmdStatus(args: { config: string }): Promise<void> {
   }
 
   const lock = await readWorkspaceLock(paths.workspace);
+  const resourceLocks = await readAllResourceLocks(paths.workspace);
   const runtime = await loadRuntime(paths);
   const approvals = await loadApprovals(paths);
   const exploration = await readJson<ExplorationState>(paths.exploration);
+  const diagnostics = await readJson<Record<string, unknown>>(paths.diagnostics, {});
   const runtimeHeartbeatAt = runtime?.heartbeat_at ? Date.parse(runtime.heartbeat_at) : NaN;
   const runtimeStale = Boolean(
     runtime?.active && (
@@ -76,6 +78,10 @@ export async function cmdStatus(args: { config: string }): Promise<void> {
     )
   );
   const lockStale = Boolean(lock && !pidIsAlive(lock.pid));
+  const resourceLockState = Object.fromEntries(Object.entries(resourceLocks).map(([name, info]) => [name, {
+    ...info,
+    stale: !pidIsAlive(info.pid),
+  }]));
   const nextWakeAt = freeze && typeof (freeze as Record<string, unknown>).until === "string"
     ? ((freeze as Record<string, unknown>).until as string)
     : (runtime?.sleep_until ?? null);
@@ -87,6 +93,7 @@ export async function cmdStatus(args: { config: string }): Promise<void> {
     freeze,
     lock,
     lock_stale: lockStale,
+    resource_locks: resourceLockState,
     runtime,
     runtime_stale: runtimeStale,
     next_wake_at: nextWakeAt,
@@ -96,6 +103,24 @@ export async function cmdStatus(args: { config: string }): Promise<void> {
     approvals: {
       granted: Object.keys(approvals.granted).sort(),
       pending: Object.keys(approvals.pending).sort(),
+    },
+    diagnostics: {
+      updated_at: diagnostics?.updated_at ?? null,
+      last_error: diagnostics?.last_error ?? null,
+      last_preflight_failures: Array.isArray(diagnostics?.last_preflight)
+        ? diagnostics.last_preflight.filter((item: Record<string, unknown>) => item.ok === false).map((item: Record<string, unknown>) => item.id)
+        : [],
+      last_validator_failures: Array.isArray(diagnostics?.last_validator_results)
+        ? diagnostics.last_validator_results.filter((item: Record<string, unknown>) => item.ok === false).map((item: Record<string, unknown>) => item.id)
+        : [],
+    },
+    compiled_program: {
+      path: paths.compiled_program,
+      exists: await pathExists(paths.compiled_program),
+    },
+    compiler_review: {
+      path: paths.compiler_review,
+      exists: await pathExists(paths.compiler_review),
     },
     exploration,
     workflow: workflowSettings(config),

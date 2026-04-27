@@ -42,16 +42,80 @@ Create a template workspace:
 
 ```bash
 tns init --workspace ./novel-project --template novel-writing
-tns init --workspace ./video-project --template audiobook-video
+tns init --workspace ./fsm-case --template fsm-control-flow
 ```
 
 Then run:
 
 ```bash
-cd ./novel-project
+cd ./my-task
+tns compile --config ./tns_config.json
 tns status --config ./tns_config.json
 tns btw --config ./tns_config.json
 tns run --config ./tns_config.json --once
+```
+
+FSM validation workspace:
+
+```bash
+tns init --workspace ./fsm-case --template fsm-control-flow
+cd ./fsm-case
+tns compile --config ./tns_config.json
+tns simulate --config ./tns_config.json
+```
+
+## Deterministic compilation
+
+TNS can compile `task.md` and `tns_config.json` into a deterministic orchestration program:
+
+```bash
+tns compile --config ./tns_config.json
+tns compile --config ./tns_config.json --synthesize
+tns compile --config ./tns_config.json --synthesize --apply
+```
+
+This writes:
+
+- `.tns/compiled/program.json`
+- `.tns/compiled/compiler-review.json` when synthesis is enabled
+
+The compiled program makes these contracts explicit:
+
+- task sections and required inputs
+- bridge files and state files
+- lifecycle and watchdog settings
+- permission profiles and approval tags
+- validators and runner-side command hooks
+- declared external tools, skills, and MCP requirements
+
+The runner will tell Claude to read the compiled program when it exists, so orchestration details stop living only in prompt inference.
+
+Synthesis mode runs the dedicated compiler agent and produces a structured patch for:
+
+- preflight
+- permissions
+- validators
+- runner-side command hooks
+- policy
+- external tools / skills / MCP declarations
+
+`--apply` merges that patch back into `tns_config.json` and recompiles.
+
+## FSM programs
+
+TNS can carry an explicit finite-state program in `config.program`.
+
+It supports:
+
+- `task`, `decision`, `loop`, `terminal` states
+- deterministic transitions with conditions
+- instruction ops: `set`, `inc`, `dec`, `append`, `emit`, `if`, `while`
+
+Use:
+
+```bash
+tns simulate --config ./tns_config.json
+tns simulate --config ./tns_config.json --set approved=true --compact
 ```
 
 ## Stage permissions
@@ -64,7 +128,7 @@ Typical flow:
 ```bash
 tns run --config ./tns_config.json --once
 tns btw --config ./tns_config.json
-tns approve --config ./tns_config.json --tag media-assets --note "approved by operator"
+tns approve --config ./tns_config.json --tag restricted-step --note "approved by operator"
 tns run --config ./tns_config.json --once
 ```
 
@@ -72,7 +136,7 @@ Key points:
 
 - each section step resolves a permission profile
 - safe command families are passed through Claude `--allowedTools`
-- escalated profiles can require an approval tag such as `media-assets`
+- escalated profiles can require an approval tag such as `restricted-step`
 - missing approvals freeze the workspace and create `.tns/approvals.json`
 - executor `files_touched` are audited and rejected if they point outside the workspace
 
@@ -134,13 +198,15 @@ Use `tns btw --config ./tns_config.json` to inspect:
 - current agent deadline
 - next wake time after freezes or sleeps
 
+`status` and `btw` also expose named resource locks under `.tns/locks/`, so compile/run/control flows can coordinate without corrupting shared state.
+
 ## Templates
 
 Available templates:
 
 - `blank`
 - `novel-writing`
-- `audiobook-video`
+- `fsm-control-flow`
 
 Templates live under `templates/` inside the package and are copied into the target workspace by `tns init`.
 
@@ -149,6 +215,8 @@ Templates live under `templates/` inside the package and are copied into the tar
 ```bash
 tns help
 tns help init
+tns help compile
+tns help fsm
 tns help run
 tns help config
 tns help permissions
@@ -162,6 +230,7 @@ tns help tmux
 agents/            Claude agent definitions used by the runner
 .claude-plugin/    minimal plugin metadata so claude can load the local agents
 dist/              compiled CLI output
+skills/            reusable skills, including task-to-program compilation guidance
 templates/         workspace templates copied by tns init
 ```
 

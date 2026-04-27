@@ -14,16 +14,31 @@ Common commands:
   tns btw --config /abs/path/to/project/tns_config.json
       Read a live, read-only snapshot during long runs without touching runner state.
 
+  tns doctor --config /abs/path/to/project/tns_config.json
+      Run preflight and environment diagnostics before a long run.
+
+  tns trace --config /abs/path/to/project/tns_config.json
+      Read recent activity events and validator outcomes.
+
+  tns recover --config /abs/path/to/project/tns_config.json
+      Clear stale runtime/lock state and recover interrupted sections.
+
+  tns compile --config /abs/path/to/project/tns_config.json
+      Compile task.md and config into a deterministic orchestration program.
+
+  tns simulate --config /abs/path/to/project/tns_config.json
+      Simulate a configured or compiled FSM program.
+
   tns start --config /abs/path/to/project/tns_config.json
       Use managed tmux when configured and available; otherwise run directly.
 
   tns run --config /abs/path/to/project/tns_config.json --once
       Run one loop directly. Good for manual stepping and debugging.
 
-  tns approve --config /abs/path/to/project/tns_config.json --tag media-assets
+  tns approve --config /abs/path/to/project/tns_config.json --tag restricted-step
       Grant one named escalated permission tag after user review.
 
-  tns revoke --config /abs/path/to/project/tns_config.json --tag media-assets
+  tns revoke --config /abs/path/to/project/tns_config.json --tag restricted-step
       Remove a previously granted escalated permission tag.
 
   tns run-tmux --config /abs/path/to/project/tns_config.json
@@ -46,7 +61,7 @@ Typical flows:
        tns btw --config /abs/path/to/project/tns_config.json
 
   6. Approve a gated stage:
-       tns approve --config /abs/path/to/project/tns_config.json --tag media-assets
+       tns approve --config /abs/path/to/project/tns_config.json --tag restricted-step
 
 Help topics:
   tns help init
@@ -54,9 +69,13 @@ Help topics:
   tns help config
   tns help permissions
   tns help exploration
+  tns help policy
+  tns help compile
+  tns help fsm
   tns help status
   tns help tmux
   tns help btw
+  tns help doctor
 `,
   init: `
 TNS init
@@ -64,7 +83,7 @@ TNS init
 New workspace:
   tns init --workspace /abs/path/to/project
   tns init --workspace /abs/path/to/project --template novel-writing
-  tns init --workspace /abs/path/to/project --template audiobook-video
+  tns init --workspace /abs/path/to/project --template fsm-control-flow
 
 Creates:
   task.md
@@ -72,7 +91,7 @@ Creates:
   .tns/
 
 Options:
-  --template blank|novel-writing|audiobook-video
+  --template blank|novel-writing|fsm-control-flow
                    Copy a built-in workspace template.
   --runner auto      Enable managed tmux only when tmux is installed.
   --runner direct    Always use direct mode.
@@ -117,7 +136,7 @@ Common patterns:
     tns start --config /abs/path/to/tns_config.json
 
 Important:
-  - run acquires the workspace lock.
+  - run acquires named resource locks for workspace, runner, and state.
   - btw does not acquire the workspace lock.
   - frozen workspaces do not advance until freeze expires or is cleared.
 `,
@@ -140,6 +159,37 @@ Defaults:
     profiles
     section_profiles
 
+  preflight is optional:
+    required_files
+    required_directories
+
+  validators is optional:
+    staged checks at preflight, pre_step, post_step, post_run
+
+  command_bridge is optional:
+    command_sets
+    hooks
+
+  policy is optional:
+    preflight_failure
+    command_failure
+    outside_workspace_violation
+    validator_failure by stage
+
+  outputs is optional:
+    write_section_outputs
+
+  externals is optional:
+    tools
+    skills
+    mcp
+
+  program is optional:
+    entry
+    context
+    states
+    max_steps
+
   exploration is optional:
     enabled
     allow_taskx
@@ -156,6 +206,150 @@ Important fields:
 
   monitor.heartbeat_seconds
       Runtime heartbeat frequency while Claude is still running.
+
+  command_bridge.command_sets
+      Predeclared runner-side commands that TNS executes directly, outside Claude.
+
+  validators
+      Declarative staged checks so result quality is enforced by the runner.
+
+  program
+      Explicit finite-state orchestration program used for compile and simulation.
+`,
+  compile: `
+TNS compile
+
+Compile the current task and config into a deterministic orchestration program:
+  tns compile --config /abs/path/to/tns_config.json
+  tns compile --config /abs/path/to/tns_config.json --synthesize
+  tns compile --config /abs/path/to/tns_config.json --synthesize --apply
+
+Output:
+  .tns/compiled/program.json
+  .tns/compiled/compiler-review.json    when synthesis is enabled
+
+The compiled program captures:
+  - workspace and lifecycle
+  - section graph from task.md
+  - bridge files and runtime state files
+  - permissions, validators, command bridge, policy
+  - declared and inferred external tools/skills/MCP requirements
+
+Synthesis mode:
+  - runs the dedicated compiler agent
+  - returns a structured patch for preflight, permissions, validators, command hooks, policy, and externals
+  - --apply merges that patch into tns_config.json and recompiles
+
+Use this when:
+  - you want Claude to read a stable program contract instead of inferring orchestration ad hoc
+  - you want task.md converted into machine-readable runtime structure
+  - you need an explicit inventory of external dependencies
+
+Recommendation:
+  Run compile after major task/config changes, then let executor/verifier read the compiled program.
+`,
+  fsm: `
+TNS finite-state programs
+
+TNS can run a deterministic FSM layer on top of the task/config model.
+
+Main commands:
+  tns compile --config /abs/path/to/tns_config.json
+  tns simulate --config /abs/path/to/tns_config.json
+
+Program fields:
+  entry
+  context
+  states
+  max_steps
+
+State fields:
+  id
+  type: task|decision|loop|terminal
+  on_enter
+  transitions
+  terminal
+
+Instruction set:
+  set
+  inc
+  dec
+  append
+  emit
+  if
+  while
+
+Examples:
+  tns simulate --config /abs/path/to/tns_config.json
+  tns simulate --config /abs/path/to/tns_config.json --set approved=true --compact
+
+Template:
+  tns init --workspace /abs/path/to/fsm-case --template fsm-control-flow
+`,
+  policy: `
+TNS policy and precompiled command sets
+
+TNS now has a runner-side policy engine and command bridge.
+
+Precompiled command sets:
+  "command_bridge": {
+    "command_sets": {
+      "manifest-check": {
+        "command": ["node", "scripts/check_manifest.mjs"],
+        "cwd": ".",
+        "timeout_seconds": 120
+      }
+    },
+    "hooks": [
+      { "stage": "post_step", "match_step": "executor", "command_sets": ["manifest-check"] }
+    ]
+  }
+
+Policy behavior:
+  "policy": {
+    "preflight_failure": { "action": "block_section", "review_prefix": "Preflight failed" },
+    "command_failure": { "action": "mark_needs_fix", "review_prefix": "Command hook failed" },
+    "outside_workspace_violation": { "action": "block_section" },
+    "validator_failure": {
+      "pre_step": { "action": "mark_needs_fix" },
+      "post_step": { "action": "mark_needs_fix" },
+      "post_run": { "action": "mark_needs_fix" }
+    }
+  }
+
+Meaning:
+  - command sets are trusted, predeclared commands executed by TNS itself
+  - validators inspect outputs at fixed stages
+  - policy decides whether failures freeze, block, mark needs_fix, or fail the run
+
+Recommended diagnostics:
+  tns doctor --config /abs/path/to/tns_config.json
+  tns trace --config /abs/path/to/tns_config.json
+`,
+  doctor: `
+TNS doctor and recover
+
+Diagnostics:
+  tns doctor --config /abs/path/to/tns_config.json
+
+Recovery:
+  tns recover --config /abs/path/to/tns_config.json
+  tns recover --config /abs/path/to/tns_config.json --force
+
+Trace:
+  tns trace --config /abs/path/to/tns_config.json
+  tns trace --config /abs/path/to/tns_config.json --section sec-002
+
+doctor runs:
+  - config load
+  - binary detection
+  - tmux probe
+  - workspace preflight
+
+recover clears:
+  - stale runtime state
+  - stale resource locks
+  - lingering in_progress sections
 `,
   exploration: `
 TNS exploration mode
@@ -212,15 +406,15 @@ Config shape:
         "allowed_bash_commands": ["pwd", "ls", "cat", "sed", "rg", "find", "git", "node"],
         "workspace_only": true
       },
-      "media_generation": {
+      "restricted_step": {
         "permission_mode": "acceptEdits",
-        "allowed_bash_commands": ["pwd", "ls", "cat", "sed", "rg", "find", "node", "mmx", "ffmpeg", "ffprobe"],
-        "requires_approval": "media-assets",
+        "allowed_bash_commands": ["pwd", "ls", "cat", "sed", "rg", "find", "node"],
+        "requires_approval": "restricted-step",
         "workspace_only": true
       }
     },
     "section_profiles": [
-      { "match_title": "Media generation", "profile": "media_generation" }
+      { "match_title": "Restricted step", "profile": "restricted_step" }
     ]
   }
 
@@ -229,7 +423,7 @@ Runtime behavior:
   2. Safe tools in that profile are auto-approved through Claude allowedTools.
   3. If the profile requires approval and the tag is missing, TNS freezes and records a pending approval request.
   4. The user reviews the request and runs:
-       tns approve --config /abs/path/to/tns_config.json --tag media-assets
+       tns approve --config /abs/path/to/tns_config.json --tag restricted-step
   5. The next run continues with that approval in place.
 
 Read-only inspection:
@@ -260,6 +454,7 @@ Use status when you want:
   - freeze state
   - approval state
   - artifacts index
+  - named resource locks
   - tmux and runtime snapshots
 
 Use btw during long runs when you do not want to touch runner state.
