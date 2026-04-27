@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expandUser } from "./fs.js";
-import type { TnsConfig, GitSettings, TmuxSettings, WorkflowSettings, QuotaSettings, AttemptsSettings } from "../types.js";
+import type { ExplorationSettings, MonitorSettings, TnsConfig, TmuxSettings, WorkflowSettings } from "../types.js";
 
 export function loadConfig(path: string): TnsConfig {
   const resolved = expandUser(path);
@@ -20,17 +20,6 @@ export function loadConfig(path: string): TnsConfig {
 
   (config as TnsConfig & { _config_path: string })._config_path = resolved;
   return config;
-}
-
-export function gitSettings(config: TnsConfig): GitSettings {
-  const cfg = config.git ?? {};
-  return {
-    enabled: Boolean(cfg.enabled ?? true),
-    default_branch: String(cfg.default_branch ?? "master"),
-    record_all_branches: Boolean(cfg.record_all_branches ?? false),
-    rollback_on_quota_exhaustion: Boolean(cfg.rollback_on_quota_exhaustion ?? true),
-    auto_init: Boolean(cfg.auto_init ?? true),
-  };
 }
 
 export function tmuxSettings(config: TnsConfig): TmuxSettings {
@@ -60,8 +49,8 @@ export function workflowSettings(config: TnsConfig): WorkflowSettings {
           prompt_mode: "executor",
           transitions: [
             { field: "outcome", equals: "blocked", set_status: "blocked", summary_field: "summary", review_field: "blocker", end: true },
-            { field: "clean_state", equals: "false", set_status: "pending", summary_field: "summary", end: true },
-            { field: "ready_for_verification", equals: "false", set_status: "pending", summary_field: "summary", end: true },
+            { field: "clean_state", equals: false, set_status: "pending", summary_field: "summary", end: true },
+            { field: "ready_for_verification", equals: false, set_status: "pending", summary_field: "summary", end: true },
             { next: "verifier" },
           ],
         },
@@ -81,27 +70,37 @@ export function workflowSettings(config: TnsConfig): WorkflowSettings {
   return wf;
 }
 
-export function quotaSettings(config: TnsConfig): QuotaSettings {
-  const cfg = config.quota ?? {};
+export function monitorSettings(config: TnsConfig): MonitorSettings {
+  const cfg = config.monitor ?? {};
   return {
-    provider: (cfg.provider ?? "none") as "none" | "rolling_usage" | "command",
-    window_token_budget: cfg.window_token_budget ?? null,
-    minimum_remaining: cfg.minimum_remaining ?? null,
-    enforce_freeze: Boolean(cfg.enforce_freeze ?? false),
-    freeze_on_unknown: Boolean(cfg.freeze_on_unknown ?? false),
-    command: String(cfg.command ?? ""),
+    heartbeat_seconds: Math.max(1, Number(cfg.heartbeat_seconds ?? 30)),
+    max_agent_runtime_seconds: Math.max(1, Number(cfg.max_agent_runtime_seconds ?? 30 * 60)),
+    kill_grace_seconds: Math.max(1, Number(cfg.kill_grace_seconds ?? 15)),
   };
 }
 
-export function attemptsSettings(config: TnsConfig): AttemptsSettings {
+export function explorationSettings(config: TnsConfig): ExplorationSettings {
+  const cfg = config.exploration ?? {};
+  return {
+    enabled: Boolean(cfg.enabled ?? false),
+    allow_taskx: Boolean(cfg.allow_taskx ?? true),
+    taskx_filename: String(cfg.taskx_filename ?? "taskx.md"),
+    max_rounds_per_window: Math.max(1, Number(cfg.max_rounds_per_window ?? 1)),
+    agent: String(cfg.agent ?? "tns-executor"),
+  };
+}
+
+export function attemptsSettings(config: TnsConfig): { max_per_section: number } {
   const cfg = config.attempts ?? {};
   return {
     max_per_section: Number(cfg.max_attempts_per_section ?? 3),
   };
 }
 
-export function getEffectivePermissionMode(config: TnsConfig): string {
-  const mode = config.permission_mode ?? "default";
+export function getEffectivePermissionMode(modeOrConfig: string | TnsConfig): string {
+  const mode = typeof modeOrConfig === "string"
+    ? modeOrConfig
+    : (modeOrConfig.permission_mode ?? "default");
   const isRoot = typeof process.geteuid === "function" && process.geteuid() === 0;
   if (mode === "bypassPermissions" && isRoot) {
     console.log("WARNING: bypassPermissions unavailable as root, using acceptEdits");

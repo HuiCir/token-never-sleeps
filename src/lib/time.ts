@@ -1,5 +1,4 @@
-import { format, addHours, addMinutes, addSeconds, differenceInSeconds, parseISO } from "date-fns";
-import { toZonedTime } from "date-fns-tz";
+import { differenceInSeconds, parseISO } from "date-fns";
 
 export function utcNow(): Date {
   return new Date();
@@ -36,8 +35,4 @@ export function refreshWindowSeconds(manifest: { refresh_hours: number; refresh_
 
 export function sleep(seconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
-}
-
-export function formatIso(dt: Date): string {
-  return format(dt, "yyyy-MM-dd'T'HH:mm:ss.SSSxxx");
 }

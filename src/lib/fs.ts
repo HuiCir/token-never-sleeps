@@ -1,5 +1,5 @@
-import { readFile, writeFile, appendFile, mkdir, access, constants } from "node:fs/promises";
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, accessSync, constants as fsConstants } from "node:fs";
+import { readFile, writeFile, appendFile, mkdir, access, constants, rm, rename } from "node:fs/promises";
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, accessSync, constants as fsConstants, renameSync } from "node:fs";
 import { dirname, resolve, isAbsolute } from "node:path";
 
 export function expandUser(path: string): string {
@@ -38,14 +38,14 @@ export async function writeJson(path: string, payload: unknown): Promise<void> {
   const p = expandUser(path);
   await mkdir(dirname(p), { recursive: true });
   const content = JSON.stringify(payload, null, 2) + "\n";
-  await writeFile(p, content, "utf-8");
+  await atomicWriteFile(p, content);
 }
 
 export function writeJsonSync(path: string, payload: unknown): void {
   const p = expandUser(path);
   mkdirSync(dirname(p), { recursive: true });
   const content = JSON.stringify(payload, null, 2) + "\n";
-  writeFileSync(p, content, "utf-8");
+  atomicWriteFileSync(p, content);
 }
 
 export async function appendJsonl(path: string, payload: Record<string, unknown>): Promise<void> {
@@ -66,6 +66,16 @@ export async function appendText(path: string, text: string): Promise<void> {
   const p = expandUser(path);
   await mkdir(dirname(p), { recursive: true });
   await appendFile(p, text, "utf-8");
+}
+
+export async function writeText(path: string, text: string): Promise<void> {
+  const p = expandUser(path);
+  await mkdir(dirname(p), { recursive: true });
+  await atomicWriteFile(p, text);
+}
+
+export async function removePath(path: string): Promise<void> {
+  await rm(expandUser(path), { force: true, recursive: false });
 }
 
 export function appendTextSync(path: string, text: string): void {
@@ -90,4 +100,22 @@ export function pathExistsSync(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+export async function atomicWriteFile(path: string, content: string): Promise<void> {
+  const p = expandUser(path);
+  const dir = dirname(p);
+  await mkdir(dir, { recursive: true });
+  const tmp = `${p}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(tmp, content, "utf-8");
+  await rename(tmp, p);
+}
+
+export function atomicWriteFileSync(path: string, content: string): void {
+  const p = expandUser(path);
+  const dir = dirname(p);
+  mkdirSync(dir, { recursive: true });
+  const tmp = `${p}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, content, "utf-8");
+  renameSync(tmp, p);
 }

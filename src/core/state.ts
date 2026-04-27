@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { writeJson, readJson, appendText } from "../lib/fs.js";
+import { writeJson, readJson, writeText, removePath, pathExists } from "../lib/fs.js";
 import { iso, utcNow } from "../lib/time.js";
 import type { TnsConfig, Manifest, StatePaths } from "../types.js";
 import { parseSections } from "./sections.js";
@@ -18,6 +18,9 @@ export function statePaths(config: TnsConfig): StatePaths {
     activity: `${stateDir}/activity.jsonl`,
     artifacts: `${stateDir}/artifacts.json`,
     tmux: `${stateDir}/tmux.json`,
+    runtime: `${stateDir}/runtime.json`,
+    approvals: `${stateDir}/approvals.json`,
+    exploration: `${stateDir}/exploration.json`,
     hook_events: `${stateDir}/hook-events.jsonl`,
     runner_log: `${stateDir}/runner.log`,
   };
@@ -44,31 +47,41 @@ export async function initState(config: TnsConfig): Promise<void> {
   };
 
   await writeJson(paths.manifest, manifest);
-
-  await appendText(
-    paths.handoff,
-    "# TNS Handoff\n\nThis file is appended by the harness after each executor/verifier cycle.\n"
-  );
+  await writeText(paths.handoff, "# TNS Handoff\n\nThis file is appended by the harness after each executor/verifier cycle.\n");
 
   const sections = parseSections(productDoc);
 
   await writeJson(paths.sections, sections);
   await writeJson(paths.reviews, []);
   await writeJson(paths.artifacts, []);
-  await writeJson(paths.freeze, null);
+  await writeJson(paths.approvals, { granted: {}, pending: {} });
+  await writeJson(paths.exploration, {
+    window_index: null,
+    rounds_run: 0,
+    last_outcome: "idle",
+    last_summary: "",
+    last_taskx_path: null,
+    updated_at: null,
+  });
+  await removePath(paths.freeze);
   await writeJson(paths.tmux, {});
+  await removePath(paths.runtime);
 
   const { appendJsonl } = await import("../lib/fs.js");
   await appendJsonl(paths.activity, { event: "init", at: iso(startedAt), sections: sections.length });
 }
 
-export async function ensureInitialized(config: TnsConfig): Promise<StatePaths> {
+export async function ensureInitialized(config: TnsConfig, options?: { autoInit?: boolean }): Promise<StatePaths> {
   const paths = statePaths(config);
-  const { pathExists } = await import("../lib/fs.js");
   const manifestExists = await pathExists(paths.manifest);
+  const autoInit = options?.autoInit ?? true;
 
-  if (!manifestExists) {
+  if (!manifestExists && autoInit) {
     await initState(config);
+  }
+
+  if (!manifestExists && !autoInit) {
+    throw new Error(`workspace not initialized: ${paths.manifest}`);
   }
 
   return paths;

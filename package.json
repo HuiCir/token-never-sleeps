@@ -1,35 +1,41 @@
 {
   "name": "token-never-sleeps",
-  "version": "1.0.0",
-  "description": "TNS runner - Claude plugin for long-running work from task.md",
+  "version": "1.0.2",
+  "description": "Pure TypeScript distribution of the TNS external orchestration loop",
   "type": "module",
   "bin": {
-    "tns": "./dist/index.js"
+    "tns": "dist/index.js"
   },
+  "files": [
+    ".claude-plugin",
+    "agents",
+    "dist",
+    "templates",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "npm run build"
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "smoke": "node dist/index.js help"
   },
   "keywords": [
     "claude",
     "tns",
-    "token-never-sleeps"
+    "agent-orchestration",
+    "long-running-agents",
+    "typescript"
   ],
-  "author": "",
+  "homepage": "https://anonir.tech/tns/",
   "license": "MIT",
   "dependencies": {
     "date-fns": "^3.6.0",
-    "date-fns-tz": "^3.2.0",
     "execa": "^9.5.2",
-    "fs-extra": "^11.3.0",
-    "nodemailer": "^6.10.0",
     "which": "^5.0.0",
-    "yargs": "^17.0.35"
+    "yargs": "^17.7.2"
   },
   "devDependencies": {
-    "@types/fs-extra": "^11.0.4",
     "@types/node": "^22.0.0",
-    "@types/nodemailer": "^6.4.17",
     "@types/which": "^3.0.4",
     "@types/yargs": "^17.0.33",
     "typescript": "^5.7.0"

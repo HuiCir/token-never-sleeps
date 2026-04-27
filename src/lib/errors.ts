@@ -26,6 +26,9 @@ const RETRYABLE_PATTERNS = [
   "connection refused",
   "broken pipe",
   "host is down",
+  "watchdog timeout",
+  "runner will retry",
+  "timed out",
 ];
 
 export function looksLikeUsageLimitError(message: string): boolean {

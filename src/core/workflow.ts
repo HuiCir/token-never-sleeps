@@ -27,13 +27,19 @@ export function transitionMatches(payload: Record<string, unknown>, transition: 
 export function firstMatchingTransition(
   payload: Record<string, unknown>,
   node: WorkflowNode
-): Transition | null {
+): Transition {
   for (const transition of node.transitions) {
     if (transitionMatches(payload, transition)) {
       return transition;
     }
   }
-  return null;
+  if (node.default_transition) return node.default_transition;
+  return {
+    set_status: "needs_fix",
+    summary_field: "summary",
+    review_value: `No workflow transition matched for step ${node.id}. Check workflow config or agent output.`,
+    end: true,
+  };
 }
 
 export function applyTransitionToSection(
@@ -73,6 +79,8 @@ export function applyTransitionToSection(
   if (transition.set_verified_at) {
     section.verified_at = now;
   }
+
+  section.current_step = transition.next || "";
 
   if (transition.set_status === "needs_fix") {
     reviews.push({

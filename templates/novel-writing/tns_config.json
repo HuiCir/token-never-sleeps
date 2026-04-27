@@ -1,0 +1,45 @@
+{
+  "refresh_hours": 5,
+  "refresh_minutes": null,
+  "refresh_seconds": null,
+  "permission_mode": "acceptEdits",
+  "permissions": {
+    "default_profile": "standard",
+    "profiles": {
+      "standard": {
+        "permission_mode": "acceptEdits",
+        "allowed_bash_commands": ["pwd", "ls", "cat", "sed", "rg", "find", "git", "node"],
+        "workspace_only": true
+      }
+    },
+    "section_profiles": []
+  },
+  "effort": "high",
+  "success_interval_seconds": 1,
+  "idle_interval_seconds": 60,
+  "max_budget_usd": null,
+  "monitor": {
+    "heartbeat_seconds": 30,
+    "max_agent_runtime_seconds": 1800,
+    "kill_grace_seconds": 15
+  },
+  "exploration": {
+    "enabled": false,
+    "allow_taskx": true,
+    "taskx_filename": "taskx.md",
+    "max_rounds_per_window": 1,
+    "agent": "tns-executor"
+  },
+  "tmux": {
+    "enabled": false,
+    "auto_create": true,
+    "session_name": "",
+    "window_name": "tns",
+    "socket_name": "",
+    "manage_runner": false,
+    "runner_window_name": "tns-runner"
+  },
+  "attempts": {
+    "max_attempts_per_section": 3
+  }
+}

@@ -39,16 +39,11 @@ export interface StatePaths {
   activity: string;
   artifacts: string;
   tmux: string;
+  runtime: string;
+  approvals: string;
+  exploration: string;
   hook_events: string;
   runner_log: string;
-}
-
-export interface GitSettings {
-  enabled: boolean;
-  default_branch: string;
-  record_all_branches: boolean;
-  rollback_on_quota_exhaustion: boolean;
-  auto_init: boolean;
 }
 
 export interface TmuxSettings {
@@ -61,36 +56,20 @@ export interface TmuxSettings {
   runner_window_name: string;
 }
 
-export interface QuotaSettings {
-  provider: "none" | "rolling_usage" | "command";
-  window_token_budget: number | null;
-  minimum_remaining: number | null;
-  enforce_freeze: boolean;
-  freeze_on_unknown: boolean;
-  command: string;
-}
-
-export interface QuotaResult {
-  ok: boolean;
-  reason?: string;
-  remaining?: number;
-  unit?: string;
-  observed_at?: string;
-}
-
 export interface WorkflowNode {
   id: string;
   agent: string;
   schema: string;
   prompt_mode: string;
   transitions: Transition[];
+  default_transition?: Transition;
 }
 
 export interface Transition {
   field?: string;
-  equals?: string;
-  not_equals?: string;
-  "in"?: string[];
+  equals?: unknown;
+  not_equals?: unknown;
+  "in"?: unknown[];
   truthy?: boolean;
   next?: string;
   set_status?: string;
@@ -108,34 +87,40 @@ export interface WorkflowSettings {
   agents: WorkflowNode[];
 }
 
-export interface NotificationEmailSettings {
-  enabled: boolean;
-  method: string;
-  to: string[];
-  from: string;
-  subject_prefix: string;
-  smtp: {
-    host: string;
-    port: number;
-    username: string;
-    password: string;
-    starttls: boolean;
-    ssl: boolean;
-  };
+export interface PermissionProfile {
+  permission_mode?: string;
+  allowed_tools?: string[];
+  disallowed_tools?: string[];
+  allowed_bash_commands?: string[];
+  disallowed_bash_commands?: string[];
+  requires_approval?: string | null;
+  workspace_only?: boolean;
 }
 
-export interface NotificationRemoteSettings {
-  enabled: boolean;
-  root: string;
-  report_task_start: boolean;
-  report_step_progress: boolean;
-  report_task_complete: boolean;
-  node_bin: string;
+export interface SectionPermissionRule {
+  match_title?: string;
+  match_step?: string;
+  profile: string;
 }
 
-export interface NotificationSettings {
-  claude_code_remote: NotificationRemoteSettings;
-  email: NotificationEmailSettings;
+export interface PermissionSettings {
+  default_profile: string;
+  profiles: Record<string, PermissionProfile>;
+  section_profiles?: SectionPermissionRule[];
+}
+
+export interface MonitorSettings {
+  heartbeat_seconds: number;
+  max_agent_runtime_seconds: number;
+  kill_grace_seconds: number;
+}
+
+export interface ExplorationSettings {
+  enabled: boolean;
+  allow_taskx: boolean;
+  taskx_filename: string;
+  max_rounds_per_window: number;
+  agent: string;
 }
 
 export interface TnsConfig {
@@ -148,14 +133,12 @@ export interface TnsConfig {
   effort: string;
   success_interval_seconds: number;
   idle_interval_seconds: number;
-  executor_agent: string;
-  verifier_agent: string;
   max_budget_usd: number | null;
-  git: GitSettings;
-  quota: QuotaSettings;
+  permissions?: PermissionSettings;
   tmux: TmuxSettings;
   workflow: WorkflowSettings;
-  notifications: NotificationSettings;
+  monitor?: Partial<MonitorSettings>;
+  exploration?: Partial<ExplorationSettings>;
   attempts?: { max_attempts_per_section?: number };
   _config_path?: string;
 }
@@ -192,7 +175,7 @@ export interface AgentUsage {
 }
 
 export interface AgentOutput {
-  payload: ExecutorResult | VerifierResult;
+  payload: ExecutorResult | VerifierResult | ExplorationResult;
   usage: AgentUsage;
   raw: Record<string, unknown>;
 }
@@ -223,27 +206,95 @@ export interface ArtifactRecord {
   verified: boolean;
 }
 
+export interface TmuxStatus {
+  enabled: boolean;
+  available: boolean;
+  fallback?: "direct";
+  reason?: string;
+  session_name?: string;
+  window_name?: string;
+  workspace?: string;
+  tmux_path?: string;
+  updated_at?: string;
+  manage_runner?: boolean;
+  runner_window_name?: string;
+}
+
+export interface RuntimeState {
+  active: boolean;
+  mode: "direct" | "tmux";
+  pid: number | null;
+  command: string;
+  started_at: string;
+  heartbeat_at: string;
+  current_section: string;
+  current_step: string;
+  window_index: number | null;
+  sleep_until: string | null;
+  session_name?: string;
+  runner_window_name?: string;
+  current_agent?: string | null;
+  agent_pid?: number | null;
+  agent_started_at?: string | null;
+  agent_deadline_at?: string | null;
+  last_exit_at?: string;
+  last_exit_reason?: string;
+  recovery_note?: string;
+}
+
 export interface ActivityEvent {
   event: string;
   at?: string;
   section?: string;
   step?: string;
   agent?: string;
-  quota?: QuotaResult;
   result?: Record<string, unknown>;
   usage?: AgentUsage;
   error?: string;
   [key: string]: unknown;
 }
 
-export interface GitContext {
-  enabled: boolean;
-  branch?: string;
-  checkpoint?: string;
-  loop_branch?: string;
-  pre_loop_commit?: string;
+export interface ExplorationResult {
+  outcome: "no_changes" | "refined" | "new_requirements" | "blocked";
+  summary: string;
+  handoff_note: string;
+  files_touched: string[];
+  checks_run: string[];
+  blocker: string;
+  taskx_created: boolean;
+  taskx_path: string;
+}
+
+export interface ExplorationState {
+  window_index: number | null;
+  rounds_run: number;
+  last_outcome: "idle" | "no_changes" | "refined" | "new_requirements" | "blocked";
+  last_summary: string;
+  last_taskx_path: string | null;
+  updated_at: string | null;
 }
 
 export interface AttemptsSettings {
   max_per_section: number;
+}
+
+export interface ApprovalGrant {
+  tag: string;
+  granted_at: string;
+  note?: string;
+}
+
+export interface ApprovalRequest {
+  tag: string;
+  requested_at: string;
+  section_id: string;
+  section_title: string;
+  step: string;
+  profile: string;
+  reason: string;
+}
+
+export interface ApprovalState {
+  granted: Record<string, ApprovalGrant>;
+  pending: Record<string, ApprovalRequest>;
 }
