@@ -603,6 +603,7 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
       const pluginSandbox = await preparePluginSandbox(paths, injectionProfile, runId);
 
       let result: { payload: Record<string, unknown>; usage: Record<string, unknown> };
+      let agentError: string | null = null;
       try {
         const agentResult = await runAgent(config, paths.workspace, node.agent, schema, prompt, {
           onHeartbeat: async (snapshot) => {
@@ -635,7 +636,8 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
         });
         result = { payload: agentResult.payload as unknown as Record<string, unknown>, usage: agentResult.usage as unknown as Record<string, unknown> };
       } catch (exc: unknown) {
-        const message = String(exc);
+        agentError = String(exc);
+        const message = agentError;
         if (looksLikeUsageLimitError(message)) {
           await appendJsonl(paths.activity, { event: "usage_limit_error", at: iso(utcNow()), section: selected.id, error: message });
           sections = (await readJson<Section[]>(paths.sections)) || [];
@@ -668,6 +670,25 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
           return { ran: false };
         }
         throw exc;
+      } finally {
+        await appendJsonl(paths.activity, {
+          event: "agent_end",
+          at: iso(utcNow()),
+          section: selected.id,
+          step: currentStep,
+          agent: node.agent,
+          ok: agentError === null,
+          error: agentError ? agentError.slice(0, 300) : undefined,
+        });
+        await heartbeatRuntime(paths, {
+          current_section: selected.id,
+          current_step: currentStep,
+          ...clearAgentRuntimeFields(),
+        });
+      }
+
+      if (agentError) {
+        return { ran: false };
       }
 
       const { payload, usage } = result;
@@ -696,16 +717,6 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
       stepResults.push({ node_id: currentStep, payload, usage });
 
       appendHandoff(paths.handoff, currentStep.charAt(0).toUpperCase() + currentStep.slice(1), payload, selected.id);
-
-      await appendJsonl(paths.activity, {
-        event: "agent_end",
-        at: iso(utcNow()),
-        section: selected.id,
-        step: currentStep,
-        agent: node.agent,
-        result: payload,
-        usage,
-      });
       await heartbeatRuntime(paths, {
         current_section: selected.id,
         current_step: currentStep,
@@ -879,7 +890,10 @@ Stay inside the workspace root. Do not intentionally access files outside ${path
     const reviewNote = section.last_review ? `\n## Previous Review Note:\n${section.last_review}` : "";
     return `${base}${reviewNote}
 
-You are the TNS executor. Make progress on exactly this section. Do not expand scope. Leave workspace in clean state. Output JSON.`;
+You are the TNS executor. Make progress on EXACTLY this one section (${section.id}: ${section.title}).
+Do NOT work on any other section — other sections exist in the tracked document but are out of scope for this call.
+Do NOT modify ${paths.sections} directly — the harness manages section state.
+Leave workspace in clean state. Output JSON matching the executor schema.`;
   }
 
   if (node.prompt_mode === "verifier") {

@@ -10,7 +10,7 @@ export interface WorkspaceLockInfo {
   resource: string;
 }
 
-const DEFAULT_STALE_MS = 30 * 60 * 1000;
+const DEFAULT_STALE_MS = 5 * 60 * 1000;
 const DEFAULT_WAIT_MS = 15 * 1000;
 const POLL_MS = 200;
 const HELD_LOCKS = new Map<string, number>();

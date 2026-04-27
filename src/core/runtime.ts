@@ -95,6 +95,40 @@ export async function recoverRuntimeIfInterrupted(paths: StatePaths, staleMs: nu
     return { recovered: false };
   }
 
+  // Semantic recovery: if all sections are terminal, the runner should have exited
+  const sections = (await readJson<Section[]>(paths.sections)) || [];
+  const allTerminal = sections.length > 0 && sections.every(
+    (s) => s.status === "done" || s.status === "blocked"
+  );
+
+  if (allTerminal) {
+    await writeJson(paths.runtime, {
+      ...runtime,
+      active: false,
+      pid: null,
+      heartbeat_at: iso(utcNow()),
+      current_section: "",
+      current_step: "",
+      sleep_until: null,
+      current_agent: null,
+      agent_pid: null,
+      agent_started_at: null,
+      agent_deadline_at: null,
+      last_exit_at: iso(utcNow()),
+      last_exit_reason: "semantic_recovery_all_sections_terminal",
+      recovery_note: `Auto-recovered: all ${sections.length} sections terminal at ${iso(utcNow())}`,
+    });
+    await appendJsonl(paths.activity, {
+      event: "runner_semantic_recovery",
+      at: iso(utcNow()),
+      reason: "semantic_all_terminal",
+      sections_done: sections.filter((s) => s.status === "done").length,
+      sections_blocked: sections.filter((s) => s.status === "blocked").length,
+      previous_pid: runtime.pid,
+    });
+    return { recovered: true, reason: "semantic_all_terminal" };
+  }
+
   const heartbeatAt = Date.parse(runtime.heartbeat_at || runtime.started_at);
   const heartbeatAgeMs = Number.isNaN(heartbeatAt) ? Number.MAX_SAFE_INTEGER : Date.now() - heartbeatAt;
   const pidAlive = pidIsAlive(runtime.pid);
@@ -103,7 +137,6 @@ export async function recoverRuntimeIfInterrupted(paths: StatePaths, staleMs: nu
     return { recovered: false };
   }
 
-  const sections = (await readJson<Section[]>(paths.sections)) || [];
   const changed = recoverInProgressSections(sections);
   if (changed) {
     await writeJson(paths.sections, sections);
