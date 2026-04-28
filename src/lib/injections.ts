@@ -1,4 +1,4 @@
-import { mkdir, symlink } from "node:fs/promises";
+import { mkdir, symlink, cp } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendJsonl, pathExists } from "./fs.js";
@@ -43,7 +43,16 @@ async function ensureSymlink(linkPath: string, targetPath: string): Promise<void
   if (await pathExists(linkPath)) {
     return;
   }
-  await symlink(targetPath, linkPath, "dir");
+  try {
+    await symlink(targetPath, linkPath, "dir");
+  } catch (e: unknown) {
+    const err = e as NodeJS.ErrnoException;
+    if (process.platform === "win32" && (err.code === "EPERM" || err.code === "EACCES")) {
+      await cp(targetPath, linkPath, { recursive: true });
+    } else {
+      throw e;
+    }
+  }
 }
 
 export async function preparePluginSandbox(paths: StatePaths, profile: ResolvedInjectionProfile, runId: string): Promise<{ plugin_root: string; skills: string[]; external_skill_paths: string[]; add_dirs: string[] }> {

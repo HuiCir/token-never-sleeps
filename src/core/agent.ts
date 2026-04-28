@@ -356,7 +356,7 @@ export async function runAgent(
       encoding: "utf8",
       captureOutput: true,
       stdin: "ignore",
-      timeout: undefined,
+      timeout: timeoutMs + killGraceMs + 5000,
       reject: false,
     }) as ReturnType<typeof execa>;
 
