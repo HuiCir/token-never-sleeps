@@ -28,6 +28,7 @@ import { runAgent, schemaByName } from "../core/agent.js";
 import { withResourceLocks } from "../lib/lock.js";
 import { gcPluginSandbox, preparePluginSandbox, resolveInjectionProfile } from "../lib/injections.js";
 import { buildParallelPlan } from "../core/fsm.js";
+import { enrichProgramWithSectionImports, programNeedsSkillMaterialization } from "../lib/skill-planning.js";
 
 function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values.filter((item) => item.trim().length > 0))).sort();
@@ -51,57 +52,6 @@ function dedupeByKey<T>(items: T[], keyOf: (item: T) => string): T[] {
     map.set(keyOf(item), item);
   }
   return Array.from(map.values());
-}
-
-function extractSkillImports(text: string): string[] {
-  const imports: string[] = [];
-  for (const line of text.split("\n")) {
-    const match = line.trim().match(/^import\s+([A-Za-z0-9_.-]+)(?:\s+as\s+[A-Za-z0-9_.-]+)?\s*$/);
-    if (match) {
-      imports.push(match[1]);
-    }
-  }
-  return Array.from(new Set(imports));
-}
-
-function sectionSkillImports(config: TnsConfig): Map<string, string[]> {
-  const imports = new Map<string, string[]>();
-  for (const section of parseSections(config.product_doc)) {
-    const skills = extractSkillImports(`${section.title}\n${section.body}`);
-    if (skills.length > 0) {
-      imports.set(section.id, skills);
-    }
-  }
-  return imports;
-}
-
-function programNeedsDeterministicMaterialization(config: TnsConfig): boolean {
-  return Boolean(config.program) ||
-    Math.max(1, Number(config.threads ?? config.thread ?? 1)) > 1 ||
-    sectionSkillImports(config).size > 0;
-}
-
-function enrichProgramWithSectionImports(program: FsmProgramSettings, config: TnsConfig): FsmProgramSettings {
-  const imports = sectionSkillImports(config);
-  if (imports.size === 0) {
-    return program;
-  }
-  return {
-    ...program,
-    states: program.states.map((state) => {
-      const skills = imports.get(state.id) ?? [];
-      if (skills.length === 0) {
-        return state;
-      }
-      return {
-        ...state,
-        parallel: {
-          ...(state.parallel ?? {}),
-          skills: Array.from(new Set([...(state.parallel?.skills ?? []), ...skills])),
-        },
-      };
-    }),
-  };
 }
 
 function normalizeExternalSkillSpec(input: unknown): ExternalSkillSpec | null {
@@ -415,7 +365,7 @@ function mergeCompilerPatch(config: TnsConfig, patch: CompilerPatch): Record<str
         ],
       }
     : config.skillbases;
-  const mergedProgram = normalizedPatch.program ?? config.program ?? (programNeedsDeterministicMaterialization(config) ? buildDerivedSectionProgram(config) : undefined);
+  const mergedProgram = normalizedPatch.program ?? config.program ?? (programNeedsSkillMaterialization(config) ? buildDerivedSectionProgram(config) : undefined);
   merged.program = mergedProgram ? enrichProgramWithSectionImports(mergedProgram, config) : undefined;
   return merged;
 }

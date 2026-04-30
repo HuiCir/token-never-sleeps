@@ -45,7 +45,7 @@ Common commands:
       Explicit tmux mode. Requires tmux.
 
   tns skills --action doctor --source /path/to/skillbase
-      Inspect skillbase/plugin skill sources and resolve import names.
+      Inspect skillbase/plugin skill sources, resolve imports, and match skills.
 
 Typical flows:
   1. Create a workspace:
@@ -259,6 +259,7 @@ Inspect skill libraries without installing or modifying them:
   tns skills --action doctor
   tns skills --action list
   tns skills --action resolve --name pdf
+  tns skills --action match --text "extract tables from a PDF report"
 
 With explicit sources:
   tns skills --action doctor --source /root/codex/skillbase --source /root/.codex/.tmp/plugins
@@ -279,6 +280,15 @@ Injection:
   injections.profiles.*.skills can reference names such as pdf. TNS resolves
   the name at runtime, creates a per-agent plugin sandbox, records the selected
   source path, and then garbage-collects the sandbox after the agent call.
+
+Selection modes:
+  skillbases.selection.mode defaults to explicit.
+  explicit uses only config/program skills and task.md import lines.
+  auto can match section text against configured skillbases.
+  A section can override with:
+    skills: auto
+    skills: explicit
+    skills: off
 
 Separation:
   TNS package-local skills are not part of the external user skillbase. They are

@@ -279,6 +279,14 @@ export interface SkillbaseSourceSettings {
 export interface SkillbaseSettings {
   sources?: SkillbaseSourceSettings[];
   use_default_sources?: boolean;
+  selection?: SkillbaseSelectionSettings;
+}
+
+export interface SkillbaseSelectionSettings {
+  mode?: "off" | "explicit" | "auto";
+  max_matches_per_section?: number;
+  min_score?: number;
+  verifier_mode?: "none" | "same" | "auto";
 }
 
 export interface FsmCondition {

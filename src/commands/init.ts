@@ -238,6 +238,12 @@ async function defaultConfig(workspace: string, taskPath: string, runner: "auto"
     skillbases: {
       use_default_sources: true,
       sources: [],
+      selection: {
+        mode: "explicit",
+        max_matches_per_section: 2,
+        min_score: 0.22,
+        verifier_mode: "none",
+      },
     },
     injections: {
       default_profile: null,

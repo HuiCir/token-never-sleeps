@@ -197,6 +197,7 @@ Inspect and resolve skills:
 tns skills --action doctor --source /abs/path/to/skillbase
 tns skills --action list --source /abs/path/to/skillbase
 tns skills --action resolve --name pdf --source /abs/path/to/skillbase
+tns skills --action match --text "extract tables from a PDF report" --source /abs/path/to/skillbase
 ```
 
 Skill injection is stage-local:
@@ -206,6 +207,33 @@ Skill injection is stage-local:
 - verifier skills do not inherit executor skills unless you explicitly configure them
 
 This keeps TNS internal skills separate from the user’s external skillbase while still allowing natural-language imports such as `import pdf`.
+
+Skill selection is controlled by the skill management layer, not by the compiler agent:
+
+- `skillbases.selection.mode: "explicit"` uses only manually planned skills from config, program state, or `task.md` import lines
+- `skillbases.selection.mode: "auto"` matches each section against the configured skillbase
+- a section can override the config with `skills: auto`, `skills: explicit`, or `skills: off`
+
+Example automatic matching:
+
+```json
+{
+  "skillbases": {
+    "use_default_sources": false,
+    "sources": [
+      { "id": "local-skillbase", "path": "/abs/path/to/skillbase", "kind": "skillbase", "priority": 0 }
+    ],
+    "selection": {
+      "mode": "auto",
+      "max_matches_per_section": 2,
+      "min_score": 0.22,
+      "verifier_mode": "none"
+    }
+  }
+}
+```
+
+With `mode: "explicit"`, SkillsBench-style preset skills map naturally to explicit `import pdf` lines or `program.states[].parallel.skills`. With `mode: "auto"`, TNS searches the configured base and records `auto_skills` plus match scores in `.tns/injection-events.jsonl`.
 
 ## Stage permissions
 

@@ -63,9 +63,12 @@ async function main() {
     )
     .command("skills", "Inspect configured skillbases", (y) =>
       y.option("config", { type: "string" })
-        .option("action", { type: "string", choices: ["doctor", "list", "resolve"], default: "doctor" })
+        .option("action", { type: "string", choices: ["doctor", "list", "resolve", "match"], default: "doctor" })
         .option("name", { type: "string" })
         .option("source", { type: "array" })
+        .option("text", { type: "string" })
+        .option("file", { type: "string" })
+        .option("limit", { type: "number" })
         .option("compact", { type: "boolean", default: false })
     )
     .command("doctor", "Run preflight and environment diagnostics", (y) =>
@@ -153,7 +156,7 @@ async function main() {
       await cmdParallelDemo(args as unknown as { config: string; scenario?: "independent" | "collaborative" | "both"; agent_timeout_seconds?: number; agentTimeoutSeconds?: number; keep_sandboxes?: boolean; keepSandboxes?: boolean });
       break;
     case "skills":
-      await cmdSkills(args as unknown as { config?: string; action?: string; name?: string; source?: string[]; compact?: boolean });
+      await cmdSkills(args as unknown as { config?: string; action?: string; name?: string; source?: string[]; text?: string; file?: string; limit?: number; compact?: boolean });
       break;
     case "doctor":
       await cmdDoctor(args as unknown as { config: string });

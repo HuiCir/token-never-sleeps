@@ -1,8 +1,9 @@
-import { buildSkillbaseIndex, resolveSkillFromIndex } from "../lib/skillbase.js";
+import { readFile } from "node:fs/promises";
+import { buildSkillbaseIndex, matchSkillsFromIndex, resolveSkillFromIndex } from "../lib/skillbase.js";
 import { loadConfig } from "../lib/config.js";
 import type { TnsConfig } from "../types.js";
 
-export async function cmdSkills(args: { config?: string; action?: string; name?: string; source?: string[]; compact?: boolean }): Promise<void> {
+export async function cmdSkills(args: { config?: string; action?: string; name?: string; source?: string[]; text?: string; file?: string; limit?: number; compact?: boolean }): Promise<void> {
   const config = args.config
     ? loadConfig(args.config)
     : ({
@@ -57,6 +58,29 @@ export async function cmdSkills(args: { config?: string; action?: string; name?:
       found: result.found,
       selected: result.selected ?? null,
       candidates: result.candidates,
+    }, null, args.compact ? 0 : 2));
+    return;
+  }
+
+  if (action === "match") {
+    const text = args.text ?? (args.file ? await readFile(args.file, "utf-8") : "");
+    if (!text.trim()) {
+      throw new Error("tns skills match requires --text or --file");
+    }
+    const matches = matchSkillsFromIndex(index, text, {
+      max: args.limit ?? config.skillbases?.selection?.max_matches_per_section ?? 5,
+      minScore: config.skillbases?.selection?.min_score ?? 0.22,
+    });
+    console.log(JSON.stringify({
+      query_length: text.length,
+      matches: matches.map((match) => ({
+        name: match.name,
+        score: match.score,
+        path: match.entry.path,
+        source_id: match.entry.source_id,
+        matched_terms: match.matched_terms,
+        description: match.entry.description,
+      })),
     }, null, args.compact ? 0 : 2));
     return;
   }

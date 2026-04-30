@@ -34,3 +34,5 @@
 - `execution.verifier` models the verifier as a short-cycle validation node with a bounded runtime and no persistent task state.
 - `skillbases.sources` lets a workspace reference user plugin libraries, extracted skillbases, or direct skill directories. `program.states[].parallel.skills` and `verifier_skills` declare imports at plan time; runtime resolves them, creates a per-agent plugin sandbox, records the selected source, and garbage-collects it after the call.
 - TNS internal skills are separate from user injection skillbases. Package-local `skills/` entries are only resolved for TNS internal compile-time `tns-*` skills; executor, verifier, and exploration imports resolve from configured user skillbases or explicit external skill paths.
+- Skill selection is owned by the skill management layer. `explicit` mode uses manually declared imports/config/program skills; `auto` mode matches section text against configured skillbases and records match scores before injection.
+- Exploration/xmode is a convergence-only pass. It is not scheduled during executor/verifier cycles and runs only after every tracked section is `done`.

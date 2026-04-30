@@ -21,7 +21,7 @@ import { runStageCommandHooks } from "../core/command-bridge.js";
 import { runStageValidators, runWorkspacePreflight } from "../core/validators.js";
 import { writeSectionOutput } from "../core/section-output.js";
 import type { CommandRunResult, ValidatorResult } from "../types.js";
-import { gcPluginSandbox, preparePluginSandbox, resolveInjectionProfile, type ResolvedInjectionProfile } from "../lib/injections.js";
+import { gcPluginSandbox, preparePluginSandbox, resolveInjectionProfile, resolveManagedInjectionProfile, type ResolvedInjectionProfile } from "../lib/injections.js";
 
 interface RunLoopResult {
   ran: boolean;
@@ -48,7 +48,8 @@ function injectionPromptBlock(profile: ResolvedInjectionProfile): string {
   return `Injected skill profile:
 - profile: ${profile.profile_name ?? "(none)"}
 - mode: ${profile.mode}
-- bundled skills: ${profile.skills.join(", ") || "(none)"}
+- explicit skills: ${(profile.explicit_skills ?? profile.skills).join(", ") || "(none)"}
+- auto-selected skills: ${(profile.auto_skills ?? []).join(", ") || "(none)"}
 - external skills: ${profile.external_skill_paths.join(", ") || "(none)"}
 - add_dirs: ${profile.add_dirs.join(", ") || "(none)"}
 
@@ -270,6 +271,10 @@ async function importTaskxSections(paths: ReturnType<typeof statePaths>, taskxPa
 async function runExplorationPass(config: TnsConfig, paths: ReturnType<typeof statePaths>, manifest: Awaited<ReturnType<typeof loadManifest>>, sections: Section[]): Promise<RunLoopResult | null> {
   const settings = explorationSettings(config);
   if (!settings.enabled) {
+    return null;
+  }
+  const converged = sections.length > 0 && sections.every((section) => ensureSectionDefaults(section).status === "done");
+  if (!converged) {
     return null;
   }
 
@@ -654,7 +659,7 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
 
       const schema = schemaByName(node.schema || node.id);
       const mode = currentStep === "verifier" ? "verifier" : "executor";
-      const injectionProfile = resolveInjectionProfile(config, mode, selected, currentStep);
+      const injectionProfile = await resolveManagedInjectionProfile(config, mode, selected, currentStep);
       const runId = `${selected.id}-${currentStep}-${Date.now()}`;
       const pluginSandbox = await preparePluginSandbox(paths, injectionProfile, runId, config);
       const injectedSkills = injectedSkillNames(injectionProfile);
@@ -671,6 +676,13 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
         approval_tag: permissionProfile.approval_tag,
         injection_profile: injectionProfile.profile_name,
         injected_skills: injectedSkills,
+        auto_skills: injectionProfile.auto_skills ?? [],
+        skill_matches: (injectionProfile.skill_matches ?? []).map((match) => ({
+          name: match.name,
+          score: match.score,
+          path: match.entry.path,
+          matched_terms: match.matched_terms,
+        })),
       });
       await heartbeatRuntime(paths, { current_section: selected.id, current_step: currentStep });
 
