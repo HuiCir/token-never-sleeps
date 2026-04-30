@@ -44,6 +44,9 @@ Common commands:
   tns run-tmux --config /abs/path/to/project/tns_config.json
       Explicit tmux mode. Requires tmux.
 
+  tns skills --action doctor --source /path/to/skillbase
+      Inspect skillbase/plugin skill sources and resolve import names.
+
 Typical flows:
   1. Create a workspace:
        tns init --workspace /abs/path/to/project --template novel-writing
@@ -72,6 +75,7 @@ Help topics:
   tns help policy
   tns help compile
   tns help fsm
+  tns help skills
   tns help status
   tns help tmux
   tns help btw
@@ -184,11 +188,30 @@ Defaults:
     skills
     mcp
 
+  execution is optional:
+    long_running
+    temporary
+    verifier
+
+  injections is optional:
+    profiles
+    rules
+
+  skillbases is optional:
+    use_default_sources
+    sources
+
+  thread is optional:
+    Top-level user switch. Set thread: 2 to request bounded parallel planning
+    when program.threads is not set.
+
   program is optional:
     entry
     context
     states
     max_steps
+    threads
+    parallel
 
   exploration is optional:
     enabled
@@ -213,8 +236,54 @@ Important fields:
   validators
       Declarative staged checks so result quality is enforced by the runner.
 
+  execution.verifier
+      Short-cycle validation node settings. Use a bounded max_runtime_seconds
+      and readonly/audit-oriented skills so verifier remains independent.
+
+  injections.rules
+      Stage-local skill injection. Keep executor domain/action skills separate
+      from verifier audit skills unless you explicitly want shared context.
+
+  skillbases.sources
+      User-provided skill libraries. Each source has path, optional id, kind
+      auto|skillbase|plugin|skills_dir, enabled, and priority. Skills can be
+      injected by name after they resolve from these sources.
+
   program
       Explicit finite-state orchestration program used for compile and simulation.
+`,
+  skills: `
+TNS skills
+
+Inspect skill libraries without installing or modifying them:
+  tns skills --action doctor
+  tns skills --action list
+  tns skills --action resolve --name pdf
+
+With explicit sources:
+  tns skills --action doctor --source /root/codex/skillbase --source /root/.codex/.tmp/plugins
+  tns skills --action resolve --name pdf --source /path/to/skillbase
+
+Config:
+  skillbases.use_default_sources defaults to true.
+  skillbases.sources accepts user plugin libraries, extracted skillbases, or
+  direct skills directories.
+
+Supported source kinds:
+  skillbase   A directory with skills/ and optional index.json.
+  plugin      A plugin library containing nested plugin skills.
+  skills_dir  A direct directory of skill folders.
+  auto        Detect the shape from files on disk.
+
+Injection:
+  injections.profiles.*.skills can reference names such as pdf. TNS resolves
+  the name at runtime, creates a per-agent plugin sandbox, records the selected
+  source path, and then garbage-collects the sandbox after the agent call.
+
+Separation:
+  TNS package-local skills are not part of the external user skillbase. They are
+  only resolved for internal compile-time tns-* skills. Executor/verifier skill
+  imports resolve from configured user skillbases or explicit external paths.
 `,
   compile: `
 TNS compile
@@ -262,6 +331,9 @@ Program fields:
   context
   states
   max_steps
+  threads: set to 2 to enable automatic bounded parallel planning
+  parallel.mode: off|auto
+  parallel.max_threads: currently bounded to 2 for heavy Claude work
 
 State fields:
   id
@@ -269,6 +341,11 @@ State fields:
   on_enter
   transitions
   terminal
+  parallel.resource
+  parallel.thread
+  parallel.depends_on
+  parallel.exclusive
+  parallel.starts_suspended
 
 Instruction set:
   set
@@ -278,10 +355,26 @@ Instruction set:
   emit
   if
   while
+  thread_suspend
+  thread_resume
+  thread_interrupt
+  thread_wait
 
 Examples:
   tns simulate --config /abs/path/to/tns_config.json
   tns simulate --config /abs/path/to/tns_config.json --set approved=true --compact
+
+Automatic optimization:
+  When program.threads is 2, TNS emits a parallel_plan for task states that have
+  simple unconditional transitions and no transition actions. Explicit
+  parallel.depends_on and parallel.resource can refine that plan without opening
+  external FSM editing.
+
+Thread cooperation:
+  FSM instructions can update context.threads.<thread>.status to suspended,
+  running, interrupted, or waiting. Transitions can then use conditions like
+  { "path": "threads.worker.status", "equals": "suspended" } to coordinate
+  thread handoff or cancellation logic.
 
 Template:
   tns init --workspace /abs/path/to/fsm-case --template fsm-control-flow

@@ -41,6 +41,8 @@ The compiled program must contain or imply all of these:
 - validators by stage
 - runner-side command hooks and command sets
 - explicit FSM program when branching or looping behavior matters
+- explicit parallel/thread contract when `thread` or `threads` is greater than 1
+- executor tiering when temporary workers are needed for resource control
 - declared externals: tools, skills, MCP servers/resources
 
 If any of the above is only implicit, tighten the config or update the compiled program path before continuing.
@@ -52,6 +54,8 @@ If any of the above is only implicit, tighten the config or update the compiled 
 3. Prefer staged validators over informal “remember to check”.
 4. Prefer `config.externals` declarations over hidden assumptions about tools, skills, or MCP.
 5. Do not silently invent external dependencies. If they are required, declare them.
+6. If multi-threading is enabled, keep thread count bounded and make cooperation explicit with FSM state metadata and thread control instructions.
+7. Prefer long-running executor ownership of durable state and temporary executor ownership of isolated short-lived work.
 
 ## Compilation workflow
 
@@ -70,6 +74,7 @@ If any of the above is only implicit, tighten the config or update the compiled 
    - add `command_bridge.command_sets`
    - add `policy`
    - add `externals.tools / skills / mcp`
+   - add `execution.long_running / execution.temporary`
    - add `program` when task flow should be explicit finite-state orchestration
 4. Re-compile after config changes.
 
@@ -86,3 +91,5 @@ The workspace is properly compiled only when:
 - the command bridge covers deterministic shell work
 - staged validators reflect actual acceptance boundaries
 - policy behavior is explicit for failure cases
+- multi-thread mode has a visible `parallel_plan`
+- temporary executors have a handback/GC contract instead of durable state ownership

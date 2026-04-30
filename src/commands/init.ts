@@ -126,6 +126,7 @@ async function defaultConfig(workspace: string, taskPath: string, runner: "auto"
   return {
     workspace,
     product_doc: taskPath,
+    thread: 1,
     refresh_hours: 5,
     refresh_minutes: null,
     refresh_seconds: null,
@@ -204,10 +205,39 @@ async function defaultConfig(workspace: string, taskPath: string, runner: "auto"
     outputs: {
       write_section_outputs: true,
     },
+    execution: {
+      long_running: {
+        agent: "tns-executor",
+        workspace: "primary",
+        persists_state: true,
+        max_parallel: 1,
+      },
+      temporary: {
+        agent: "tns-temp-executor",
+        workspace: "temporary",
+        persists_state: false,
+        must_report_to: "tns-executor",
+        gc_after_run: true,
+        max_parallel: 1,
+      },
+      verifier: {
+        agent: "tns-verifier",
+        workspace: "primary",
+        persists_state: false,
+        must_report_to: "tns-executor",
+        gc_after_run: true,
+        max_runtime_seconds: 600,
+        max_parallel: 1,
+      },
+    },
     externals: {
       tools: [],
       skills: [],
       mcp: [],
+    },
+    skillbases: {
+      use_default_sources: true,
+      sources: [],
     },
     injections: {
       default_profile: null,
@@ -216,11 +246,29 @@ async function defaultConfig(workspace: string, taskPath: string, runner: "auto"
           skills: ["tns-program-compiler"],
           description: "Inject the compiler skill only for compile synthesis passes.",
         },
+        executor_task: {
+          skills: [],
+          external_skill_paths: [],
+          description: "Executor-only task skills. Add domain/action skills here; verifier does not inherit them.",
+        },
+        verifier_audit: {
+          skills: [],
+          external_skill_paths: [],
+          description: "Verifier-only audit skills. Add readonly inspection, schema, test, or Docker verifier skills here.",
+        },
       },
       rules: [
         {
           match_mode: "compile",
           profile: "compiler",
+        },
+        {
+          match_mode: "executor",
+          profile: "executor_task",
+        },
+        {
+          match_mode: "verifier",
+          profile: "verifier_audit",
         },
       ],
     },
@@ -328,6 +376,14 @@ function mergeConfig(base: TnsConfig, template: Partial<TnsConfig>, workspace: s
       mcp: template.externals?.mcp ?? base.externals?.mcp ?? [],
     },
     program: template.program ?? base.program,
+    skillbases: {
+      ...(base.skillbases ?? { use_default_sources: true, sources: [] }),
+      ...(template.skillbases ?? {}),
+      sources: [
+        ...(base.skillbases?.sources ?? []),
+        ...(template.skillbases?.sources ?? []),
+      ],
+    },
     injections: {
       ...(base.injections ?? { default_profile: null, profiles: {}, rules: [] }),
       ...(template.injections ?? {}),

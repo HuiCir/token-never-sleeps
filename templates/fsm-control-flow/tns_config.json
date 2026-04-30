@@ -2,6 +2,7 @@
   "refresh_hours": 5,
   "refresh_minutes": null,
   "refresh_seconds": null,
+  "thread": 1,
   "permission_mode": "acceptEdits",
   "permissions": {
     "default_profile": "standard",
@@ -85,6 +86,31 @@
   },
   "outputs": {
     "write_section_outputs": true
+  },
+  "execution": {
+    "long_running": {
+      "agent": "tns-executor",
+      "workspace": "primary",
+      "persists_state": true,
+      "max_parallel": 1
+    },
+    "temporary": {
+      "agent": "tns-temp-executor",
+      "workspace": "temporary",
+      "persists_state": false,
+      "must_report_to": "tns-executor",
+      "gc_after_run": true,
+      "max_parallel": 1
+    },
+    "verifier": {
+      "agent": "tns-verifier",
+      "workspace": "primary",
+      "persists_state": false,
+      "must_report_to": "tns-executor",
+      "gc_after_run": true,
+      "max_runtime_seconds": 600,
+      "max_parallel": 1
+    }
   },
   "externals": {
     "tools": [

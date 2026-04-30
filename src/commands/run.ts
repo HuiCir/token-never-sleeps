@@ -1,4 +1,4 @@
-import { loadConfig, workflowSettings, attemptsSettings, explorationSettings, outputSettings, policySettings } from "../lib/config.js";
+import { loadConfig, workflowSettings, attemptsSettings, explorationSettings, outputSettings, policySettings, executionSettings } from "../lib/config.js";
 import { statePaths, ensureInitialized, loadManifest } from "../core/state.js";
 import { readJson, writeJson, appendJsonl, pathExists, removePath, resolvePath as resolveFsPath } from "../lib/fs.js";
 import { iso, utcNow, sleep } from "../lib/time.js";
@@ -8,7 +8,7 @@ import { runAgent, schemaByName } from "../core/agent.js";
 import { firstMatchingTransition, applyTransitionToSection } from "../core/workflow.js";
 import { appendHandoff } from "../core/handoff.js";
 import { rebuildArtifactIndex } from "../core/artifacts.js";
-import type { Section, ExecutorResult, VerifierResult, ReviewRecord, TnsConfig, ExplorationResult, ExplorationState } from "../types.js";
+import type { FsmProgramSettings, Section, ExecutorResult, VerifierResult, ReviewRecord, TnsConfig, ExplorationResult, ExplorationState } from "../types.js";
 import { withResourceLocks } from "../lib/lock.js";
 import { beginRuntime, endRuntime, heartbeatRuntime, recoverRuntimeIfInterrupted } from "../core/runtime.js";
 import { currentWindow } from "../lib/time.js";
@@ -21,7 +21,7 @@ import { runStageCommandHooks } from "../core/command-bridge.js";
 import { runStageValidators, runWorkspacePreflight } from "../core/validators.js";
 import { writeSectionOutput } from "../core/section-output.js";
 import type { CommandRunResult, ValidatorResult } from "../types.js";
-import { preparePluginSandbox, resolveInjectionProfile } from "../lib/injections.js";
+import { gcPluginSandbox, preparePluginSandbox, resolveInjectionProfile, type ResolvedInjectionProfile } from "../lib/injections.js";
 
 interface RunLoopResult {
   ran: boolean;
@@ -36,6 +36,48 @@ const EMPTY_EXPLORATION_STATE: ExplorationState = {
   last_taskx_path: null,
   updated_at: null,
 };
+
+function injectedSkillNames(profile: ResolvedInjectionProfile): string[] {
+  return [
+    ...profile.skills,
+    ...profile.external_skill_paths.map((item) => item.split("/").pop() || item),
+  ];
+}
+
+function injectionPromptBlock(profile: ResolvedInjectionProfile): string {
+  return `Injected skill profile:
+- profile: ${profile.profile_name ?? "(none)"}
+- mode: ${profile.mode}
+- bundled skills: ${profile.skills.join(", ") || "(none)"}
+- external skills: ${profile.external_skill_paths.join(", ") || "(none)"}
+- add_dirs: ${profile.add_dirs.join(", ") || "(none)"}
+
+Skill-use contract:
+- If a listed skill is relevant, read and apply its SKILL.md before acting.
+- Executor skills and verifier skills are stage-local; verifier does not inherit executor problem-solving skills unless config explicitly injects them.
+- Verifier-stage skills are for independent audit, readonly inspection, schema checks, test execution, and evidence review, not for repairing or re-solving the task.
+- Include used skill names in skills_used when the output schema supports it.
+- If no injected skill is relevant, leave skills_used empty and explain the verification or execution basis in checks_run.`;
+}
+
+function configForAgentMode(config: TnsConfig, mode: ResolvedInjectionProfile["mode"]): TnsConfig {
+  const execution = executionSettings(config);
+  const classSettings = mode === "verifier"
+    ? execution.verifier
+    : mode === "executor"
+      ? execution.long_running
+      : null;
+  if (!classSettings?.max_runtime_seconds) {
+    return config;
+  }
+  return {
+    ...config,
+    monitor: {
+      ...(config.monitor ?? {}),
+      max_agent_runtime_seconds: classSettings.max_runtime_seconds,
+    },
+  };
+}
 
 function clearAgentRuntimeFields() {
   return {
@@ -82,10 +124,33 @@ function ensureFilesTouchedStayInWorkspace(workspace: string, filesTouched: stri
   }
 }
 
+async function configWithCompiledProgram(config: TnsConfig, paths: ReturnType<typeof statePaths>): Promise<TnsConfig> {
+  if (config.program) {
+    return config;
+  }
+  const compiled = await readJson<Record<string, unknown>>(paths.compiled_program);
+  const inputs = compiled?.inputs;
+  const orchestration = compiled?.orchestration;
+  const candidate = inputs && typeof inputs === "object" && !Array.isArray(inputs)
+    ? (inputs as Record<string, unknown>).program
+    : orchestration && typeof orchestration === "object" && !Array.isArray(orchestration)
+      ? (orchestration as Record<string, unknown>).program
+      : null;
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return config;
+  }
+  const program = candidate as Partial<FsmProgramSettings>;
+  if (!program.entry || !Array.isArray(program.states)) {
+    return config;
+  }
+  return { ...config, program: program as FsmProgramSettings };
+}
+
 export async function cmdRun(args: { config: string; once?: boolean; poll_seconds?: number }): Promise<void> {
-  const config = loadConfig(args.config);
-  await withResourceLocks(config.workspace, ["workspace", "runner", "state"], "tns run", async () => {
-    const paths = await ensureInitialized(config, { autoInit: true });
+  const initialConfig = loadConfig(args.config);
+  await withResourceLocks(initialConfig.workspace, ["workspace", "runner", "state"], "tns run", async () => {
+    const paths = await ensureInitialized(initialConfig, { autoInit: true });
+    const config = await configWithCompiledProgram(initialConfig, paths);
     const manifest = await loadManifest(paths);
     await recoverRuntimeIfInterrupted(paths);
     await beginRuntime(paths, "tns run", "direct", { window_index: currentWindow(manifest).index });
@@ -248,10 +313,11 @@ async function runExplorationPass(config: TnsConfig, paths: ReturnType<typeof st
     return { ran: false };
   }
 
-    const prompt = await buildExplorationPrompt(config, paths, sections, settings.allow_taskx, settings.taskx_filename, roundsRun + 1, settings.max_rounds_per_window, permissionProfile);
   const injectionProfile = resolveInjectionProfile(config, "exploration", null, "exploration");
   const runId = `exploration-${Date.now()}`;
-  const pluginSandbox = await preparePluginSandbox(paths, injectionProfile, runId);
+  const pluginSandbox = await preparePluginSandbox(paths, injectionProfile, runId, config);
+  const prompt = await buildExplorationPrompt(config, paths, sections, settings.allow_taskx, settings.taskx_filename, roundsRun + 1, settings.max_rounds_per_window, permissionProfile, injectionProfile);
+  const agentConfig = configForAgentMode(config, "exploration");
   await appendJsonl(paths.activity, {
     event: "exploration_start",
     at: iso(utcNow()),
@@ -263,7 +329,7 @@ async function runExplorationPass(config: TnsConfig, paths: ReturnType<typeof st
 
   let result: ExplorationResult;
   try {
-    const agentResult = await runAgent(config, paths.workspace, settings.agent, schemaByName("exploration"), prompt, {
+    const agentResult = await runAgent(agentConfig, paths.workspace, settings.agent, schemaByName("exploration"), prompt, {
       onHeartbeat: async (snapshot) => {
         await heartbeatRuntime(paths, {
           current_section: "exploration",
@@ -307,6 +373,8 @@ async function runExplorationPass(config: TnsConfig, paths: ReturnType<typeof st
       return { ran: false };
     }
     throw exc;
+  } finally {
+    await gcPluginSandbox(paths, runId, pluginSandbox.plugin_root);
   }
 
   ensureFilesTouchedStayInWorkspace(paths.workspace, result.files_touched || []);
@@ -584,6 +652,15 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
         return { ran: false };
       }
 
+      const schema = schemaByName(node.schema || node.id);
+      const mode = currentStep === "verifier" ? "verifier" : "executor";
+      const injectionProfile = resolveInjectionProfile(config, mode, selected, currentStep);
+      const runId = `${selected.id}-${currentStep}-${Date.now()}`;
+      const pluginSandbox = await preparePluginSandbox(paths, injectionProfile, runId, config);
+      const injectedSkills = injectedSkillNames(injectionProfile);
+      const prompt = await buildPrompt(paths, selected, node, priorResults, permissionProfile, injectionProfile);
+      const agentConfig = configForAgentMode(config, mode);
+
       await appendJsonl(paths.activity, {
         event: "agent_start",
         at: iso(utcNow()),
@@ -592,19 +669,14 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
         agent: node.agent,
         permission_profile: permissionProfile.profile_name,
         approval_tag: permissionProfile.approval_tag,
+        injection_profile: injectionProfile.profile_name,
+        injected_skills: injectedSkills,
       });
       await heartbeatRuntime(paths, { current_section: selected.id, current_step: currentStep });
 
-      const schema = schemaByName(node.schema || node.id);
-      const prompt = await buildPrompt(paths, selected, node, priorResults, permissionProfile);
-      const mode = currentStep === "verifier" ? "verifier" : "executor";
-      const injectionProfile = resolveInjectionProfile(config, mode, selected, currentStep);
-      const runId = `${selected.id}-${currentStep}-${Date.now()}`;
-      const pluginSandbox = await preparePluginSandbox(paths, injectionProfile, runId);
-
       let result: { payload: Record<string, unknown>; usage: Record<string, unknown> };
       try {
-        const agentResult = await runAgent(config, paths.workspace, node.agent, schema, prompt, {
+        const agentResult = await runAgent(agentConfig, paths.workspace, node.agent, schema, prompt, {
           onHeartbeat: async (snapshot) => {
             await heartbeatRuntime(paths, {
               current_section: selected.id,
@@ -625,7 +697,7 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
             section_id: selected.id,
             step: currentStep,
             injection_profile: injectionProfile.profile_name,
-            injected_skills: [...pluginSandbox.skills, ...pluginSandbox.external_skill_paths.map((item) => item.split("/").pop() || item)],
+            injected_skills: injectedSkills,
           },
           permissions: {
             permission_mode: permissionProfile.permission_mode,
@@ -668,6 +740,8 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
           return { ran: false };
         }
         throw exc;
+      } finally {
+        await gcPluginSandbox(paths, runId, pluginSandbox.plugin_root);
       }
 
       const { payload, usage } = result;
@@ -842,7 +916,8 @@ async function buildPrompt(
   section: Section,
   node: { id: string; prompt_mode: string },
   priorResults: Record<string, Record<string, unknown>>,
-  permissionProfile: ResolvedPermissionProfile
+  permissionProfile: ResolvedPermissionProfile,
+  injectionProfile: ResolvedInjectionProfile
 ): Promise<string> {
   const manifestData = await readJson<{ product_doc: string }>(paths.manifest);
   const body = section.body || "(empty)";
@@ -872,6 +947,8 @@ Permission profile:
 - restricted_paths: ${permissionProfile.restricted_paths.join(", ") || paths.workspace}
 - auto-approved tools: ${permissionProfile.allowed_tools.join(", ") || "(none)"}
 
+${injectionPromptBlock(injectionProfile)}
+
 Stay inside the workspace root. Do not intentionally access files outside ${paths.workspace}. If progress would require a command family outside the current permission profile, stop and report the missing command family as a blocker instead of guessing.
 `;
 
@@ -879,7 +956,7 @@ Stay inside the workspace root. Do not intentionally access files outside ${path
     const reviewNote = section.last_review ? `\n## Previous Review Note:\n${section.last_review}` : "";
     return `${base}${reviewNote}
 
-You are the TNS executor. Make progress on exactly this section. Do not expand scope. Leave workspace in clean state. Output JSON.`;
+You are the TNS executor. Make progress on exactly this section. Do not expand scope. Leave workspace in clean state. Output JSON. If skill guidance affected the work, report the skill names in skills_used.`;
   }
 
   if (node.prompt_mode === "verifier") {
@@ -890,7 +967,7 @@ You are the TNS executor. Make progress on exactly this section. Do not expand s
 ## Executor Summary:
 ${execSummary}
 
-You are the TNS verifier. Verify the section with fresh perspective. Pass only if actually complete. Output JSON.`;
+You are the TNS verifier. Verify the section with fresh perspective. Your job is to audit whether the delivered artifacts satisfy the original section and whether the executor's summary, files_touched, checks_run, and skills_used are credible. Use injected verifier-stage skills only for independent review, readonly inspection, schema checks, official tests, or evidence collection. Do not repair or re-solve the task. Pass only if actually complete. Output JSON. If skill guidance affected verification, report the skill names in skills_used.`;
   }
 
   return base;
@@ -904,7 +981,8 @@ async function buildExplorationPrompt(
   taskxFilename: string,
   round: number,
   maxRounds: number,
-  permissionProfile: ResolvedPermissionProfile
+  permissionProfile: ResolvedPermissionProfile,
+  injectionProfile: ResolvedInjectionProfile
 ): Promise<string> {
   const completed = sections
     .map((section) => `- ${section.title}: ${section.last_summary || "(no summary recorded)"}`)
@@ -925,6 +1003,8 @@ Permission profile:
 - workspace_only: ${permissionProfile.workspace_only ? "true" : "false"}
 - restricted_paths: ${permissionProfile.restricted_paths.join(", ") || paths.workspace}
 - auto-approved tools: ${permissionProfile.allowed_tools.join(", ") || "(none)"}
+
+${injectionPromptBlock(injectionProfile)}
 
 Rules:
 - Default to conservative refinement. Only change files when the improvement is concrete and justified.

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
-import { commandBridgeSettings, externalSettings, explorationSettings, monitorSettings, outputSettings, policySettings, preflightSettings, programSettings, tmuxSettings, validatorSettings, workflowSettings } from "../lib/config.js";
-import { readJson, writeJson, writeText } from "../lib/fs.js";
+import { basename, isAbsolute, resolve } from "node:path";
+import { commandBridgeSettings, executionSettings, externalSettings, explorationSettings, monitorSettings, outputSettings, policySettings, preflightSettings, programSettings, tmuxSettings, validatorSettings, workflowSettings } from "../lib/config.js";
+import { pathExistsSync, readJson, writeJson, writeText } from "../lib/fs.js";
 import { parseSections } from "../core/sections.js";
 import { ensureInitialized, statePaths } from "../core/state.js";
 import { loadConfig } from "../lib/config.js";
@@ -26,7 +26,8 @@ import { iso, utcNow } from "../lib/time.js";
 import { permissionSettings } from "../lib/permissions.js";
 import { runAgent, schemaByName } from "../core/agent.js";
 import { withResourceLocks } from "../lib/lock.js";
-import { preparePluginSandbox, resolveInjectionProfile } from "../lib/injections.js";
+import { gcPluginSandbox, preparePluginSandbox, resolveInjectionProfile } from "../lib/injections.js";
+import { buildParallelPlan } from "../core/fsm.js";
 
 function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values.filter((item) => item.trim().length > 0))).sort();
@@ -50,6 +51,83 @@ function dedupeByKey<T>(items: T[], keyOf: (item: T) => string): T[] {
     map.set(keyOf(item), item);
   }
   return Array.from(map.values());
+}
+
+function extractSkillImports(text: string): string[] {
+  const imports: string[] = [];
+  for (const line of text.split("\n")) {
+    const match = line.trim().match(/^import\s+([A-Za-z0-9_.-]+)(?:\s+as\s+[A-Za-z0-9_.-]+)?\s*$/);
+    if (match) {
+      imports.push(match[1]);
+    }
+  }
+  return Array.from(new Set(imports));
+}
+
+function sectionSkillImports(config: TnsConfig): Map<string, string[]> {
+  const imports = new Map<string, string[]>();
+  for (const section of parseSections(config.product_doc)) {
+    const skills = extractSkillImports(`${section.title}\n${section.body}`);
+    if (skills.length > 0) {
+      imports.set(section.id, skills);
+    }
+  }
+  return imports;
+}
+
+function programNeedsDeterministicMaterialization(config: TnsConfig): boolean {
+  return Boolean(config.program) ||
+    Math.max(1, Number(config.threads ?? config.thread ?? 1)) > 1 ||
+    sectionSkillImports(config).size > 0;
+}
+
+function enrichProgramWithSectionImports(program: FsmProgramSettings, config: TnsConfig): FsmProgramSettings {
+  const imports = sectionSkillImports(config);
+  if (imports.size === 0) {
+    return program;
+  }
+  return {
+    ...program,
+    states: program.states.map((state) => {
+      const skills = imports.get(state.id) ?? [];
+      if (skills.length === 0) {
+        return state;
+      }
+      return {
+        ...state,
+        parallel: {
+          ...(state.parallel ?? {}),
+          skills: Array.from(new Set([...(state.parallel?.skills ?? []), ...skills])),
+        },
+      };
+    }),
+  };
+}
+
+function normalizeExternalSkillSpec(input: unknown): ExternalSkillSpec | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return null;
+  }
+  const record = input as Record<string, unknown>;
+  const name = typeof record.name === "string" && record.name.trim()
+    ? record.name
+    : typeof record.id === "string" && record.id.trim()
+      ? record.id
+      : "";
+  if (!name) {
+    return null;
+  }
+  return {
+    name,
+    required: typeof record.required === "boolean" ? record.required : true,
+    purpose: typeof record.purpose === "string"
+      ? record.purpose
+      : Array.isArray(record.notes)
+        ? record.notes.map(String).join("; ")
+        : typeof record.description === "string"
+          ? record.description
+          : undefined,
+  };
 }
 
 function collectToolUniverse(config: TnsConfig): string[] {
@@ -78,6 +156,22 @@ function mergePreflight(base: PreflightSettings | undefined, patch: PreflightSet
   return {
     required_files: uniqueSorted([...(base?.required_files ?? []), ...(patch?.required_files ?? [])]),
     required_directories: uniqueSorted([...(base?.required_directories ?? []), ...(patch?.required_directories ?? [])]),
+  };
+}
+
+function workspacePath(config: TnsConfig, item: string): string {
+  return isAbsolute(item) ? item : resolve(config.workspace, item);
+}
+
+function filterExistingPreflight(config: TnsConfig, preflight: PreflightSettings): PreflightSettings {
+  return {
+    required_files: (preflight.required_files ?? []).filter((item) =>
+      pathExistsSync(workspacePath(config, item)) ||
+      (item === basename(config.product_doc) && pathExistsSync(config.product_doc))
+    ),
+    required_directories: (preflight.required_directories ?? []).filter((item) =>
+      pathExistsSync(workspacePath(config, item))
+    ),
   };
 }
 
@@ -127,6 +221,25 @@ function mergeExternals(base: ExternalDependencySettings | undefined, patch: Ext
     skills: mergeSkills(base?.skills, patch?.skills),
     mcp: mergeMcp(base?.mcp, patch?.mcp),
   };
+}
+
+function mergeExecution(base: TnsConfig["execution"], patch: TnsConfig["execution"]): TnsConfig["execution"] | undefined {
+  if (!base && !patch) return undefined;
+  const merged = {
+    long_running: {
+      ...(base?.long_running ?? {}),
+      ...(patch?.long_running ?? {}),
+    },
+    temporary: {
+      ...(base?.temporary ?? {}),
+      ...(patch?.temporary ?? {}),
+    },
+    verifier: {
+      ...(base?.verifier ?? {}),
+      ...(patch?.verifier ?? {}),
+    },
+  };
+  return executionSettings({ workspace: "", product_doc: "", thread: 1, execution: merged } as TnsConfig);
 }
 
 function normalizeCommandSetSpec(id: string, input: unknown): CommandSetSpec | null {
@@ -264,9 +377,12 @@ function normalizeCompilerPatch(patch: CompilerPatch | undefined): CompilerPatch
     },
     externals: {
       tools: source.externals?.tools ?? [],
-      skills: source.externals?.skills ?? [],
+      skills: (source.externals?.skills ?? [])
+        .map((item) => normalizeExternalSkillSpec(item))
+        .filter((item): item is ExternalSkillSpec => Boolean(item)),
       mcp: source.externals?.mcp ?? [],
     },
+    skillbases: source.skillbases,
     program: source.program && Object.keys(source.program).length > 0 ? source.program : undefined,
   };
 }
@@ -274,7 +390,7 @@ function normalizeCompilerPatch(patch: CompilerPatch | undefined): CompilerPatch
 function mergeCompilerPatch(config: TnsConfig, patch: CompilerPatch): Record<string, unknown> {
   const normalizedPatch = normalizeCompilerPatch(patch);
   const merged = stripInternalConfig(config);
-  merged.preflight = mergePreflight(config.preflight, normalizedPatch.preflight);
+  merged.preflight = filterExistingPreflight(config, mergePreflight(config.preflight, normalizedPatch.preflight));
   merged.validators = mergeValidators(config.validators, normalizedPatch.validators);
   merged.command_bridge = {
     ...(config.command_bridge ?? { command_sets: {}, hooks: [] }),
@@ -288,7 +404,19 @@ function mergeCompilerPatch(config: TnsConfig, patch: CompilerPatch): Record<str
   merged.policy = mergePolicy(config.policy, normalizedPatch.policy);
   merged.permissions = mergePermissions(config.permissions, normalizedPatch.permissions);
   merged.externals = mergeExternals(config.externals, normalizedPatch.externals);
-  merged.program = normalizedPatch.program ?? config.program;
+  merged.execution = mergeExecution(config.execution, normalizedPatch.execution);
+  merged.skillbases = normalizedPatch.skillbases
+    ? {
+        ...(config.skillbases ?? {}),
+        ...normalizedPatch.skillbases,
+        sources: [
+          ...(config.skillbases?.sources ?? []),
+          ...(normalizedPatch.skillbases.sources ?? []),
+        ],
+      }
+    : config.skillbases;
+  const mergedProgram = normalizedPatch.program ?? config.program ?? (programNeedsDeterministicMaterialization(config) ? buildDerivedSectionProgram(config) : undefined);
+  merged.program = mergedProgram ? enrichProgramWithSectionImports(mergedProgram, config) : undefined;
   return merged;
 }
 
@@ -322,13 +450,19 @@ function buildDerivedSectionProgram(config: TnsConfig): FsmProgramSettings {
     },
     states,
     max_steps: Math.max(10, sections.length * 4 || 10),
+    threads: Math.max(1, Number(config.threads ?? config.thread ?? 1)),
+    parallel: {
+      mode: Number(config.threads ?? config.thread ?? 1) > 1 ? "auto" : "off",
+      max_threads: Math.max(1, Number(config.threads ?? config.thread ?? 1)),
+    },
   };
 }
 
 async function buildCompiledProgram(config: TnsConfig, paths: ReturnType<typeof statePaths>) {
   const sections = parseSections(config.product_doc);
   const taskText = await readFile(config.product_doc, "utf-8");
-  const normalizedProgram = programSettings(config) ?? buildDerivedSectionProgram(config);
+  const normalizedProgram = enrichProgramWithSectionImports(programSettings(config) ?? buildDerivedSectionProgram(config), config);
+  const parallelPlan = buildParallelPlan(normalizedProgram);
   return {
     version: 1,
     compiled_at: iso(utcNow()),
@@ -351,6 +485,12 @@ async function buildCompiledProgram(config: TnsConfig, paths: ReturnType<typeof 
       monitor: monitorSettings(config),
       tmux: tmuxSettings(config),
       exploration: explorationSettings(config),
+      execution: executionSettings(config),
+      parallel: {
+        configured_threads: Math.max(1, Number(config.threads ?? config.thread ?? normalizedProgram.threads ?? 1)),
+        mode: normalizedProgram.parallel?.mode ?? "off",
+        max_threads: normalizedProgram.parallel?.max_threads ?? normalizedProgram.threads ?? 1,
+      },
     },
     inputs: {
       preflight: preflightSettings(config),
@@ -361,6 +501,7 @@ async function buildCompiledProgram(config: TnsConfig, paths: ReturnType<typeof 
         body: section.body,
       })),
       program: normalizedProgram,
+      parallel_plan: parallelPlan,
     },
     bridge: {
       handoff_file: paths.handoff,
@@ -382,7 +523,9 @@ async function buildCompiledProgram(config: TnsConfig, paths: ReturnType<typeof 
       command_bridge: commandBridgeSettings(config),
       policy: policySettings(config),
       outputs: outputSettings(config),
+      execution: executionSettings(config),
       program: normalizedProgram,
+      parallel_plan: parallelPlan,
     },
     externals: {
       declared: externalSettings(config),
@@ -403,6 +546,7 @@ function defaultCompilerPatch(): CompilerPatch {
     policy: { validator_failure: {} },
     permissions: { default_profile: "standard", profiles: {}, section_profiles: [] },
     externals: { tools: [], skills: [], mcp: [] },
+    execution: undefined,
     program: undefined,
   };
 }
@@ -449,26 +593,31 @@ async function synthesizeCompilerReview(config: TnsConfig, paths: ReturnType<typ
   const prompt = await buildCompilerPrompt(paths, config, compiledProgram);
   const injectionProfile = resolveInjectionProfile(config, "compile", null, "compile");
   const runId = `compile-${Date.now()}`;
-  const pluginSandbox = await preparePluginSandbox(paths, injectionProfile, runId);
+  const pluginSandbox = await preparePluginSandbox(paths, injectionProfile, runId, config);
   const configPath = config._config_path || `${paths.workspace}/tns_config.json`;
   const originalConfigText = await readFile(configPath, "utf-8");
-  const result = await runAgent(config, paths.workspace, "tns-compiler", schemaByName("compiler"), prompt, {
-    plugin_dir: pluginSandbox.plugin_root,
-    extra_add_dirs: pluginSandbox.add_dirs,
-    permissions: {
-      permission_mode: "default",
-      allowed_tools: ["Read", "Glob", "Grep", "LS", "Bash(pwd:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(sed:*)", "Bash(rg:*)", "Bash(find:*)"],
-      disallowed_tools: ["Edit", "Write", "MultiEdit", "NotebookEdit"],
-    },
-    paths,
-    metadata: {
-      run_id: runId,
-      agent_mode: "compile",
-      step: "compile",
-      injection_profile: injectionProfile.profile_name,
-      injected_skills: [...pluginSandbox.skills, ...pluginSandbox.external_skill_paths.map((item) => item.split("/").pop() || item)],
-    },
-  });
+  let result;
+  try {
+    result = await runAgent(config, paths.workspace, "tns-compiler", schemaByName("compiler"), prompt, {
+      plugin_dir: pluginSandbox.plugin_root,
+      extra_add_dirs: pluginSandbox.add_dirs,
+      permissions: {
+        permission_mode: "default",
+        allowed_tools: ["Read", "Glob", "Grep", "LS", "Bash(pwd:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(sed:*)", "Bash(rg:*)", "Bash(find:*)"],
+        disallowed_tools: ["Edit", "Write", "MultiEdit", "NotebookEdit"],
+      },
+      paths,
+      metadata: {
+        run_id: runId,
+        agent_mode: "compile",
+        step: "compile",
+        injection_profile: injectionProfile.profile_name,
+        injected_skills: [...pluginSandbox.skills, ...pluginSandbox.external_skill_paths.map((item) => item.split("/").pop() || item)],
+      },
+    });
+  } finally {
+    await gcPluginSandbox(paths, runId, pluginSandbox.plugin_root);
+  }
   const payload = result.payload as CompilerResult;
   const currentConfigText = await readFile(configPath, "utf-8");
   if (currentConfigText !== originalConfigText) {

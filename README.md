@@ -9,11 +9,12 @@ It keeps the core local runner behavior:
 - `tns start` chooses tmux or direct mode
 - `tns status` shows tracked section state
 - `tns plan-import` converts a markdown plan into tracked sections
+- `tns compile` emits a deterministic orchestration program, including bounded parallel plans
+- `tns skills` inspects local skillbases and resolves stage-local skill imports
 
 What this package intentionally leaves out:
 
 - Python entrypoints
-- Claude plugin skills and hook wrappers
 - bundled website content
 - heavyweight demo outputs and media artifacts
 - remote notification glue that is not part of the local runner core
@@ -84,11 +85,29 @@ The compiled program makes these contracts explicit:
 - task sections and required inputs
 - bridge files and state files
 - lifecycle and watchdog settings
+- thread count and bounded parallel planning hints
 - permission profiles and approval tags
 - validators and runner-side command hooks
 - declared external tools, skills, and MCP requirements
+- state-level skill imports such as `import pdf`
 
-The runner will tell Claude to read the compiled program when it exists, so orchestration details stop living only in prompt inference.
+The runner reads the compiled program when it exists, so orchestration details stop living only in prompt inference. For example, a section body containing:
+
+```text
+import pdf
+```
+
+is compiled into the matching state as:
+
+```json
+{
+  "parallel": {
+    "skills": ["pdf"]
+  }
+}
+```
+
+At runtime, the executor resolves and injects that skill for the section.
 
 Synthesis mode runs the dedicated compiler agent and produces a structured patch for:
 
@@ -110,6 +129,8 @@ It supports:
 - `task`, `decision`, `loop`, `terminal` states
 - deterministic transitions with conditions
 - instruction ops: `set`, `inc`, `dec`, `append`, `emit`, `if`, `while`
+- thread-control ops: `thread_suspend`, `thread_resume`, `thread_interrupt`, `thread_wait`
+- state-level parallel hints under `parallel`
 
 Use:
 
@@ -117,6 +138,74 @@ Use:
 tns simulate --config ./tns_config.json
 tns simulate --config ./tns_config.json --set approved=true --compact
 ```
+
+## Bounded Parallel Planning
+
+Set `thread` or `threads` to request bounded parallel orchestration:
+
+```json
+{
+  "thread": 2,
+  "program": {
+    "threads": 2,
+    "parallel": {
+      "mode": "auto",
+      "max_threads": 2
+    }
+  }
+}
+```
+
+The current planning layer keeps heavy Claude parallel plans bounded to two threads on this machine profile. The compiler and simulator emit a `parallel_plan` with batches, resources, dependencies, and thread controls. The standard section runner still executes the executor/verifier workflow conservatively; use `tns parallel-demo` for the current manual two-thread boundary check while the production scheduler evolves. State-level hints include:
+
+- `parallel.thread`
+- `parallel.resource`
+- `parallel.depends_on`
+- `parallel.exclusive`
+- `parallel.starts_suspended`
+- `parallel.executor_class`
+- `parallel.skills`
+- `parallel.verifier_skills`
+- `parallel.workspace`
+- `parallel.merge_policy`
+
+`tns parallel-demo` can run independent and collaborative worker scenarios.
+
+## Skillbases
+
+TNS supports user-provided skill libraries for executor and verifier injection. A source can be an extracted skillbase, a plugin library, or a direct directory of skill folders:
+
+```json
+{
+  "skillbases": {
+    "use_default_sources": false,
+    "sources": [
+      {
+        "id": "local-skillbase",
+        "path": "/abs/path/to/skillbase",
+        "kind": "skillbase",
+        "priority": 0
+      }
+    ]
+  }
+}
+```
+
+Inspect and resolve skills:
+
+```bash
+tns skills --action doctor --source /abs/path/to/skillbase
+tns skills --action list --source /abs/path/to/skillbase
+tns skills --action resolve --name pdf --source /abs/path/to/skillbase
+```
+
+Skill injection is stage-local:
+
+- compiler-stage TNS internal skills are resolved from the package-local `skills/` directory
+- executor and verifier imports resolve from configured user skillbases or explicit external skill paths
+- verifier skills do not inherit executor skills unless you explicitly configure them
+
+This keeps TNS internal skills separate from the user’s external skillbase while still allowing natural-language imports such as `import pdf`.
 
 ## Stage permissions
 
@@ -217,6 +306,7 @@ tns help
 tns help init
 tns help compile
 tns help fsm
+tns help skills
 tns help run
 tns help config
 tns help permissions

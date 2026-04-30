@@ -18,6 +18,8 @@ import { cmdRecover } from "./commands/recover.js";
 import { cmdTrace } from "./commands/trace.js";
 import { cmdCompile } from "./commands/compile.js";
 import { cmdSimulate } from "./commands/simulate.js";
+import { cmdParallelDemo } from "./commands/parallel-demo.js";
+import { cmdSkills } from "./commands/skills.js";
 
 interface CommonArgs {
   config: string;
@@ -31,7 +33,7 @@ async function main() {
   }
   const argv = await yargs(rawArgs)
     .command("help [topic]", "Show TNS help", (y) =>
-      y.positional("topic", { type: "string", choices: ["init", "run", "config", "permissions", "exploration", "status", "tmux", "btw", "policy", "doctor", "compile", "fsm"] })
+      y.positional("topic", { type: "string", choices: ["init", "run", "config", "permissions", "exploration", "status", "tmux", "btw", "policy", "doctor", "compile", "fsm", "skills"] })
     )
     .command("init", "Initialize TNS state or scaffold a workspace", (y) =>
       y.option("config", { type: "string" })
@@ -51,6 +53,19 @@ async function main() {
       y.option("config", { type: "string", demandOption: true })
         .option("set", { type: "array" })
         .option("max-steps", { type: "number" })
+        .option("compact", { type: "boolean", default: false })
+    )
+    .command("parallel-demo", "Run a manual two-Claude-thread functional demo", (y) =>
+      y.option("config", { type: "string", demandOption: true })
+        .option("scenario", { type: "string", choices: ["independent", "collaborative", "both"], default: "both" })
+        .option("agent-timeout-seconds", { type: "number", default: 120 })
+        .option("keep-sandboxes", { type: "boolean", default: false })
+    )
+    .command("skills", "Inspect configured skillbases", (y) =>
+      y.option("config", { type: "string" })
+        .option("action", { type: "string", choices: ["doctor", "list", "resolve"], default: "doctor" })
+        .option("name", { type: "string" })
+        .option("source", { type: "array" })
         .option("compact", { type: "boolean", default: false })
     )
     .command("doctor", "Run preflight and environment diagnostics", (y) =>
@@ -133,6 +148,12 @@ async function main() {
       break;
     case "simulate":
       await cmdSimulate(args as unknown as { config: string; set?: string[]; max_steps?: number; maxSteps?: number; compact?: boolean });
+      break;
+    case "parallel-demo":
+      await cmdParallelDemo(args as unknown as { config: string; scenario?: "independent" | "collaborative" | "both"; agent_timeout_seconds?: number; agentTimeoutSeconds?: number; keep_sandboxes?: boolean; keepSandboxes?: boolean });
+      break;
+    case "skills":
+      await cmdSkills(args as unknown as { config?: string; action?: string; name?: string; source?: string[]; compact?: boolean });
       break;
     case "doctor":
       await cmdDoctor(args as unknown as { config: string });

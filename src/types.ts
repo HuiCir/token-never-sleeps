@@ -232,6 +232,22 @@ export interface ExternalDependencySettings {
   mcp?: ExternalMcpSpec[];
 }
 
+export interface ExecutorClassSettings {
+  agent: string;
+  workspace: "primary" | "temporary";
+  persists_state: boolean;
+  must_report_to?: string;
+  gc_after_run?: boolean;
+  max_runtime_seconds?: number;
+  max_parallel?: number;
+}
+
+export interface ExecutionSettings {
+  long_running?: ExecutorClassSettings;
+  temporary?: ExecutorClassSettings;
+  verifier?: ExecutorClassSettings;
+}
+
 export interface InjectionProfile {
   skills?: string[];
   external_skill_paths?: string[];
@@ -252,6 +268,19 @@ export interface InjectionSettings {
   rules?: StageInjectionRule[];
 }
 
+export interface SkillbaseSourceSettings {
+  id?: string;
+  path: string;
+  kind?: "auto" | "skillbase" | "plugin" | "skills_dir";
+  enabled?: boolean;
+  priority?: number;
+}
+
+export interface SkillbaseSettings {
+  sources?: SkillbaseSourceSettings[];
+  use_default_sources?: boolean;
+}
+
 export interface FsmCondition {
   path?: string;
   equals?: string | number | boolean | null;
@@ -267,11 +296,14 @@ export interface FsmCondition {
 export type FsmLiteral = string | number | boolean | null | string[] | number[] | boolean[] | Record<string, unknown>;
 
 export interface FsmInstruction {
-  op: "set" | "inc" | "dec" | "append" | "emit" | "if" | "while";
+  op: "set" | "inc" | "dec" | "append" | "emit" | "if" | "while" | "thread_suspend" | "thread_resume" | "thread_interrupt" | "thread_wait";
   path?: string;
   value?: FsmLiteral;
   by?: number;
   event?: string;
+  thread?: string;
+  threads?: string[];
+  reason?: string;
   cond?: FsmCondition;
   then?: FsmInstruction[];
   else?: FsmInstruction[];
@@ -294,6 +326,7 @@ export interface FsmStateSpec {
   transitions?: FsmTransitionSpec[];
   terminal?: boolean;
   description?: string;
+  parallel?: FsmParallelStateSettings;
 }
 
 export interface FsmProgramSettings {
@@ -301,6 +334,66 @@ export interface FsmProgramSettings {
   context?: Record<string, unknown>;
   states: FsmStateSpec[];
   max_steps?: number;
+  thread?: number;
+  threads?: number;
+  parallel?: FsmParallelSettings;
+}
+
+export interface FsmParallelStateSettings {
+  group?: string;
+  thread?: string;
+  resource?: string;
+  depends_on?: string[];
+  exclusive?: boolean;
+  starts_suspended?: boolean;
+  executor_class?: "long_running" | "temporary";
+  verifier?: "none" | "state" | "batch" | "final";
+  skills?: string[];
+  verifier_skills?: string[];
+  workspace?: "primary" | "temporary";
+  merge_policy?: "none" | "handback" | "patch" | "artifact_only";
+  timeout_seconds?: number;
+}
+
+export interface FsmParallelSettings {
+  mode?: "off" | "auto";
+  max_threads?: number;
+}
+
+export interface FsmParallelPlanItem {
+  state: string;
+  thread: string;
+  resource: string;
+  depends_on: string[];
+  executor_class?: "long_running" | "temporary";
+  verifier?: "none" | "state" | "batch" | "final";
+  skills?: string[];
+  verifier_skills?: string[];
+  workspace?: "primary" | "temporary";
+  merge_policy?: "none" | "handback" | "patch" | "artifact_only";
+  timeout_seconds?: number;
+  reason: string;
+}
+
+export interface FsmParallelBatch {
+  id: string;
+  states: FsmParallelPlanItem[];
+}
+
+export interface FsmParallelPlan {
+  enabled: boolean;
+  mode: "off" | "auto";
+  max_threads: number;
+  batches: FsmParallelBatch[];
+  controls: FsmThreadControlPlanItem[];
+  notes: string[];
+}
+
+export interface FsmThreadControlPlanItem {
+  state: string;
+  op: "thread_suspend" | "thread_resume" | "thread_interrupt" | "thread_wait";
+  threads: string[];
+  reason: string;
 }
 
 export interface CompilerPatch {
@@ -310,12 +403,16 @@ export interface CompilerPatch {
   policy?: PolicySettings;
   permissions?: PermissionSettings;
   externals?: ExternalDependencySettings;
+  execution?: ExecutionSettings;
   program?: FsmProgramSettings;
+  skillbases?: SkillbaseSettings;
 }
 
 export interface TnsConfig {
   workspace: string;
   product_doc: string;
+  thread?: number;
+  threads?: number;
   refresh_hours: number;
   refresh_minutes: number | null;
   refresh_seconds: number | null;
@@ -336,8 +433,10 @@ export interface TnsConfig {
   policy?: PolicySettings;
   outputs?: Partial<StructuredOutputSettings>;
   externals?: ExternalDependencySettings;
+  execution?: ExecutionSettings;
   program?: FsmProgramSettings;
   injections?: InjectionSettings;
+  skillbases?: SkillbaseSettings;
   _config_path?: string;
 }
 
@@ -349,6 +448,7 @@ export interface ExecutorResult {
   handoff_note: string;
   files_touched: string[];
   checks_run: string[];
+  skills_used?: string[];
   blocker: string;
   commit_message: string;
 }
@@ -357,6 +457,7 @@ export interface VerifierResult {
   status: "pass" | "fail" | "blocked";
   summary: string;
   checks_run: string[];
+  skills_used?: string[];
   findings: string[];
   review_note: string;
 }
@@ -547,6 +648,7 @@ export interface FsmSimulationResult {
   terminal_state: string | null;
   trace: FsmSimulationTrace[];
   final_context: Record<string, unknown>;
+  parallel_plan?: FsmParallelPlan;
 }
 
 export interface ExplorationResult {

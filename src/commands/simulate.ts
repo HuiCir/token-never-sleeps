@@ -48,6 +48,19 @@ export async function cmdSimulate(args: { config: string; set?: string[]; max_st
       steps: result.steps,
       terminal_state: result.terminal_state,
       final_context: result.final_context,
+      parallel_plan: result.parallel_plan ? {
+        enabled: result.parallel_plan.enabled,
+        mode: result.parallel_plan.mode,
+        max_threads: result.parallel_plan.max_threads,
+        batches: result.parallel_plan.batches.map((batch) => ({
+          id: batch.id,
+          states: batch.states.map((item) => ({
+            state: item.state,
+            thread: item.thread,
+          })),
+        })),
+        controls: result.parallel_plan.controls,
+      } : undefined,
     }, null, 2));
     return;
   }

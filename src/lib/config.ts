@@ -3,6 +3,7 @@ import { expandUser } from "./fs.js";
 import type {
   CommandBridgeSettings,
   ExternalDependencySettings,
+  ExecutionSettings,
   InjectionSettings,
   InjectionProfile,
   StageInjectionRule,
@@ -241,6 +242,39 @@ export function externalSettings(config: TnsConfig): ExternalDependencySettings 
   };
 }
 
+export function executionSettings(config: TnsConfig): Required<ExecutionSettings> {
+  const cfg = config.execution ?? {};
+  return {
+    long_running: {
+      agent: cfg.long_running?.agent ?? "tns-executor",
+      workspace: cfg.long_running?.workspace ?? "primary",
+      persists_state: cfg.long_running?.persists_state ?? true,
+      must_report_to: cfg.long_running?.must_report_to,
+      gc_after_run: cfg.long_running?.gc_after_run ?? false,
+      max_runtime_seconds: cfg.long_running?.max_runtime_seconds,
+      max_parallel: cfg.long_running?.max_parallel ?? 1,
+    },
+    temporary: {
+      agent: cfg.temporary?.agent ?? "tns-temp-executor",
+      workspace: cfg.temporary?.workspace ?? "temporary",
+      persists_state: cfg.temporary?.persists_state ?? false,
+      must_report_to: cfg.temporary?.must_report_to ?? "tns-executor",
+      gc_after_run: cfg.temporary?.gc_after_run ?? true,
+      max_runtime_seconds: cfg.temporary?.max_runtime_seconds,
+      max_parallel: cfg.temporary?.max_parallel ?? Math.max(1, Number(config.threads ?? config.thread ?? 1)),
+    },
+    verifier: {
+      agent: cfg.verifier?.agent ?? "tns-verifier",
+      workspace: cfg.verifier?.workspace ?? "primary",
+      persists_state: cfg.verifier?.persists_state ?? false,
+      must_report_to: cfg.verifier?.must_report_to ?? "tns-executor",
+      gc_after_run: cfg.verifier?.gc_after_run ?? true,
+      max_runtime_seconds: cfg.verifier?.max_runtime_seconds ?? 600,
+      max_parallel: cfg.verifier?.max_parallel ?? 1,
+    },
+  };
+}
+
 export function injectionSettings(config: TnsConfig): InjectionSettings {
   const cfg = (config.injections ?? {}) as Partial<InjectionSettings>;
   return {
@@ -298,6 +332,21 @@ function normalizeStates(items: FsmStateSpec[] | undefined): FsmStateSpec[] {
     description: item.description,
     on_enter: normalizeInstructions(item.on_enter),
     transitions: normalizeTransitions(item.transitions),
+    parallel: item.parallel ? {
+      group: item.parallel.group,
+      thread: item.parallel.thread,
+      resource: item.parallel.resource,
+      depends_on: Array.isArray(item.parallel.depends_on) ? item.parallel.depends_on.map(String) : [],
+      exclusive: Boolean(item.parallel.exclusive ?? false),
+      starts_suspended: Boolean(item.parallel.starts_suspended ?? false),
+      executor_class: item.parallel.executor_class,
+      verifier: item.parallel.verifier,
+      skills: Array.isArray(item.parallel.skills) ? item.parallel.skills.map(String) : [],
+      verifier_skills: Array.isArray(item.parallel.verifier_skills) ? item.parallel.verifier_skills.map(String) : [],
+      workspace: item.parallel.workspace,
+      merge_policy: item.parallel.merge_policy,
+      timeout_seconds: item.parallel.timeout_seconds,
+    } : undefined,
   }));
 }
 
@@ -306,11 +355,17 @@ export function programSettings(config: TnsConfig): FsmProgramSettings | null {
   if (!cfg || !Array.isArray(cfg.states) || cfg.states.length === 0 || !cfg.entry) {
     return null;
   }
+  const requestedThreads = Math.max(1, Number(cfg.threads ?? cfg.thread ?? config.threads ?? config.thread ?? cfg.parallel?.max_threads ?? 1));
   return {
     entry: cfg.entry,
     context: cfg.context ?? {},
     states: normalizeStates(cfg.states),
     max_steps: Math.max(1, Number(cfg.max_steps ?? 100)),
+    threads: requestedThreads,
+    parallel: {
+      mode: cfg.parallel?.mode ?? (requestedThreads > 1 ? "auto" : "off"),
+      max_threads: Math.max(1, Number(cfg.parallel?.max_threads ?? requestedThreads)),
+    },
   };
 }
 

@@ -48,6 +48,7 @@ export const EXECUTOR_SCHEMA = {
     handoff_note: { type: "string" },
     files_touched: { type: "array", items: { type: "string" } },
     checks_run: { type: "array", items: { "type": "string" } },
+    skills_used: { type: "array", items: { type: "string" } },
     blocker: { type: "string" },
     commit_message: { type: "string" },
   },
@@ -60,6 +61,7 @@ export const VERIFIER_SCHEMA = {
     status: { type: "string", enum: ["pass", "fail", "blocked"] },
     summary: { type: "string" },
     checks_run: { type: "array", items: { type: "string" } },
+    skills_used: { type: "array", items: { type: "string" } },
     findings: { type: "array", items: { type: "string" } },
     review_note: { type: "string" },
   },
@@ -125,6 +127,21 @@ export const COMPILER_SCHEMA = {
             mcp: { type: "array", items: { type: "object" } },
           },
         },
+        execution: {
+          type: "object",
+          properties: {
+            long_running: { type: "object" },
+            temporary: { type: "object" },
+            verifier: { type: "object" },
+          },
+        },
+        skillbases: {
+          type: "object",
+          properties: {
+            use_default_sources: { type: "boolean" },
+            sources: { type: "array", items: { type: "object" } },
+          },
+        },
         program: {
           type: "object",
           properties: {
@@ -132,6 +149,15 @@ export const COMPILER_SCHEMA = {
             context: { type: "object" },
             states: { type: "array", items: { type: "object" } },
             max_steps: { type: "number" },
+            thread: { type: "number" },
+            threads: { type: "number" },
+            parallel: {
+              type: "object",
+              properties: {
+                mode: { type: "string", enum: ["off", "auto"] },
+                max_threads: { type: "number" },
+              },
+            },
           },
         },
       },
