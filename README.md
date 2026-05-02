@@ -16,7 +16,7 @@ What this package intentionally leaves out:
 
 - Python entrypoints
 - bundled website content
-- heavyweight demo outputs and media artifacts
+- heavyweight generated outputs and media artifacts
 - remote notification glue that is not part of the local runner core
 
 ## Install
@@ -43,26 +43,24 @@ Create a template workspace:
 
 ```bash
 tns init --workspace ./novel-project --template novel-writing
-tns init --workspace ./fsm-case --template fsm-control-flow
 ```
 
-Then run:
+Then run the real orchestration loop:
 
 ```bash
 cd ./my-task
 tns compile --config ./tns_config.json
 tns status --config ./tns_config.json
-tns btw --config ./tns_config.json
+tns doctor --config ./tns_config.json
 tns run --config ./tns_config.json --once
 ```
 
-FSM validation workspace:
+For long-running work, use the managed runner and inspect it without mutating state:
 
 ```bash
-tns init --workspace ./fsm-case --template fsm-control-flow
-cd ./fsm-case
-tns compile --config ./tns_config.json
-tns simulate --config ./tns_config.json
+tns start --config ./tns_config.json
+tns btw --config ./tns_config.json
+tns trace --config ./tns_config.json
 ```
 
 ## Deterministic compilation
@@ -91,6 +89,17 @@ The compiled program makes these contracts explicit:
 - declared external tools, skills, and MCP requirements
 - state-level skill imports such as `import pdf`
 
+For task documents without an explicit `config.program`, compile also derives a
+conservative section dependency graph. Use `Depends on: <section title or id>`
+inside a section, or reference a backticked artifact path created by an upstream
+section, to materialize `parallel.depends_on` in the generated program and
+bounded `parallel_plan`.
+
+At run time, TNS also checks whether `task.md` and `.tns/sections.json` have
+drifted from the compiled contract. It can refresh derived compiled programs and
+section state automatically, and records the latest retry/recompile/block
+decision in `.tns/diagnostics.json`.
+
 The runner reads the compiled program when it exists, so orchestration details stop living only in prompt inference. For example, a section body containing:
 
 ```text
@@ -108,7 +117,6 @@ is compiled into the matching state as:
 ```
 
 At runtime, the executor resolves and injects that skill for the section.
-
 Synthesis mode runs the dedicated compiler agent and produces a structured patch for:
 
 - preflight
@@ -120,9 +128,9 @@ Synthesis mode runs the dedicated compiler agent and produces a structured patch
 
 `--apply` merges that patch back into `tns_config.json` and recompiles.
 
-## FSM programs
+## Orchestration Programs
 
-TNS can carry an explicit finite-state program in `config.program`.
+TNS can carry an explicit orchestration program in `config.program`.
 
 It supports:
 
@@ -132,11 +140,13 @@ It supports:
 - thread-control ops: `thread_suspend`, `thread_resume`, `thread_interrupt`, `thread_wait`
 - state-level parallel hints under `parallel`
 
-Use:
+Compile materializes that program and writes the runner-visible contract to
+`.tns/compiled/program.json`:
 
 ```bash
-tns simulate --config ./tns_config.json
-tns simulate --config ./tns_config.json --set approved=true --compact
+tns compile --config ./tns_config.json
+tns status --config ./tns_config.json
+tns run --config ./tns_config.json --once
 ```
 
 ## Bounded Parallel Planning
@@ -156,7 +166,7 @@ Set `thread` or `threads` to request bounded parallel orchestration:
 }
 ```
 
-The current planning layer keeps heavy Claude parallel plans bounded to two threads on this machine profile. The compiler and simulator emit a `parallel_plan` with batches, resources, dependencies, and thread controls. The standard section runner still executes the executor/verifier workflow conservatively; use `tns parallel-demo` for the current manual two-thread boundary check while the production scheduler evolves. State-level hints include:
+The current planning layer keeps heavy Claude parallel plans bounded to two threads on this machine profile. The compiler emits a `parallel_plan` with batches, resources, dependencies, and thread controls. The standard runner executes the next ready parallel batch with `Promise.allSettled`; singleton batches continue through the conservative one-section path. State-level hints include:
 
 - `parallel.thread`
 - `parallel.resource`
@@ -169,7 +179,8 @@ The current planning layer keeps heavy Claude parallel plans bounded to two thre
 - `parallel.workspace`
 - `parallel.merge_policy`
 
-`tns parallel-demo` can run independent and collaborative worker scenarios.
+Use `tns trace --config ./tns_config.json` to inspect `parallel_batch_start`,
+`agent_start`, `agent_end`, and `parallel_batch_end` events from the real run.
 
 ## Skillbases
 
@@ -323,7 +334,6 @@ Available templates:
 
 - `blank`
 - `novel-writing`
-- `fsm-control-flow`
 
 Templates live under `templates/` inside the package and are copied into the target workspace by `tns init`.
 
@@ -333,7 +343,6 @@ Templates live under `templates/` inside the package and are copied into the tar
 tns help
 tns help init
 tns help compile
-tns help fsm
 tns help skills
 tns help run
 tns help config

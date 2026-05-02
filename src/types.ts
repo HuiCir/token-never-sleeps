@@ -446,6 +446,7 @@ export interface TnsConfig {
   injections?: InjectionSettings;
   skillbases?: SkillbaseSettings;
   _config_path?: string;
+  _program_from_compiled?: boolean;
 }
 
 export interface ExecutorResult {
@@ -631,32 +632,6 @@ export interface ToolUseEvent {
   id?: string;
   denied?: boolean;
   raw: Record<string, unknown>;
-}
-
-export interface FsmTransitionTrace {
-  from: string;
-  to: string;
-  transition_id: string;
-  matched: boolean;
-  reason: string;
-}
-
-export interface FsmSimulationTrace {
-  state: string;
-  step: number;
-  events: string[];
-  context: Record<string, unknown>;
-  transition?: FsmTransitionTrace | null;
-}
-
-export interface FsmSimulationResult {
-  ok: boolean;
-  reason: string;
-  steps: number;
-  terminal_state: string | null;
-  trace: FsmSimulationTrace[];
-  final_context: Record<string, unknown>;
-  parallel_plan?: FsmParallelPlan;
 }
 
 export interface ExplorationResult {

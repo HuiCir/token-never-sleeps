@@ -26,9 +26,6 @@ Common commands:
   tns compile --config /abs/path/to/project/tns_config.json
       Compile task.md and config into a deterministic orchestration program.
 
-  tns simulate --config /abs/path/to/project/tns_config.json
-      Simulate a configured or compiled FSM program.
-
   tns start --config /abs/path/to/project/tns_config.json
       Use managed tmux when configured and available; otherwise run directly.
 
@@ -74,7 +71,6 @@ Help topics:
   tns help exploration
   tns help policy
   tns help compile
-  tns help fsm
   tns help skills
   tns help status
   tns help tmux
@@ -87,7 +83,6 @@ TNS init
 New workspace:
   tns init --workspace /abs/path/to/project
   tns init --workspace /abs/path/to/project --template novel-writing
-  tns init --workspace /abs/path/to/project --template fsm-control-flow
 
 Creates:
   task.md
@@ -95,7 +90,7 @@ Creates:
   .tns/
 
 Options:
-  --template blank|novel-writing|fsm-control-flow
+  --template blank|novel-writing
                    Copy a built-in workspace template.
   --runner auto      Enable managed tmux only when tmux is installed.
   --runner direct    Always use direct mode.
@@ -250,7 +245,7 @@ Important fields:
       injected by name after they resolve from these sources.
 
   program
-      Explicit finite-state orchestration program used for compile and simulation.
+      Explicit orchestration program used by compile and the runner.
 `,
   skills: `
 TNS skills
@@ -326,68 +321,6 @@ Use this when:
 
 Recommendation:
   Run compile after major task/config changes, then let executor/verifier read the compiled program.
-`,
-  fsm: `
-TNS finite-state programs
-
-TNS can run a deterministic FSM layer on top of the task/config model.
-
-Main commands:
-  tns compile --config /abs/path/to/tns_config.json
-  tns simulate --config /abs/path/to/tns_config.json
-
-Program fields:
-  entry
-  context
-  states
-  max_steps
-  threads: set to 2 to enable automatic bounded parallel planning
-  parallel.mode: off|auto
-  parallel.max_threads: currently bounded to 2 for heavy Claude work
-
-State fields:
-  id
-  type: task|decision|loop|terminal
-  on_enter
-  transitions
-  terminal
-  parallel.resource
-  parallel.thread
-  parallel.depends_on
-  parallel.exclusive
-  parallel.starts_suspended
-
-Instruction set:
-  set
-  inc
-  dec
-  append
-  emit
-  if
-  while
-  thread_suspend
-  thread_resume
-  thread_interrupt
-  thread_wait
-
-Examples:
-  tns simulate --config /abs/path/to/tns_config.json
-  tns simulate --config /abs/path/to/tns_config.json --set approved=true --compact
-
-Automatic optimization:
-  When program.threads is 2, TNS emits a parallel_plan for task states that have
-  simple unconditional transitions and no transition actions. Explicit
-  parallel.depends_on and parallel.resource can refine that plan without opening
-  external FSM editing.
-
-Thread cooperation:
-  FSM instructions can update context.threads.<thread>.status to suspended,
-  running, interrupted, or waiting. Transitions can then use conditions like
-  { "path": "threads.worker.status", "equals": "suspended" } to coordinate
-  thread handoff or cancellation logic.
-
-Template:
-  tns init --workspace /abs/path/to/fsm-case --template fsm-control-flow
 `,
   policy: `
 TNS policy and precompiled command sets

@@ -9,19 +9,19 @@ import { probeTmux, tmuxPath } from "../lib/platform.js";
 import { withResourceLocks } from "../lib/lock.js";
 import { statePaths } from "../core/state.js";
 
-type TemplateName = "blank" | "novel-writing" | "fsm-control-flow";
+type TemplateName = "blank" | "novel-writing";
 
 const DEFAULT_TASK = `# Task
 
 ## Section 1
-Replace this demo section with one concrete unit of work.
+Replace this sample section with one concrete unit of work.
 
 Acceptance criteria:
 - Describe the expected files, behavior, or output.
 - List the checks TNS should run before marking the section ready.
 
 ## Section 2
-Replace this demo section with the next concrete unit of work.
+Replace this sample section with the next concrete unit of work.
 
 Acceptance criteria:
 - Keep each section independently reviewable.

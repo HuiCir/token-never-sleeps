@@ -113,6 +113,7 @@ export async function cmdStatus(args: { config: string }): Promise<void> {
       last_validator_failures: Array.isArray(diagnostics?.last_validator_results)
         ? diagnostics.last_validator_results.filter((item: Record<string, unknown>) => item.ok === false).map((item: Record<string, unknown>) => item.id)
         : [],
+      last_recovery_decision: diagnostics?.last_recovery_decision ?? null,
     },
     compiled_program: {
       path: paths.compiled_program,

@@ -3,18 +3,18 @@ import { statePaths, ensureInitialized, loadManifest } from "../core/state.js";
 import { readJson, writeJson, appendJsonl, pathExists, removePath, resolvePath as resolveFsPath } from "../lib/fs.js";
 import { iso, utcNow, sleep } from "../lib/time.js";
 import { looksLikeUsageLimitError, looksLikeRetryableError } from "../lib/errors.js";
-import { selectSection, updateSection, recoverInProgressSections, ensureSectionDefaults } from "../core/sections.js";
+import { selectSection, updateSection, recoverInProgressSections, ensureSectionDefaults, parseSections } from "../core/sections.js";
 import { runAgent, schemaByName } from "../core/agent.js";
 import { firstMatchingTransition, applyTransitionToSection } from "../core/workflow.js";
 import { appendHandoff } from "../core/handoff.js";
 import { rebuildArtifactIndex } from "../core/artifacts.js";
-import type { FsmProgramSettings, Section, ExecutorResult, VerifierResult, ReviewRecord, TnsConfig, ExplorationResult, ExplorationState } from "../types.js";
+import type { FsmParallelPlan, FsmParallelPlanItem, FsmProgramSettings, Section, ExecutorResult, VerifierResult, ReviewRecord, TnsConfig, ExplorationResult, ExplorationState } from "../types.js";
 import { withResourceLocks } from "../lib/lock.js";
 import { beginRuntime, endRuntime, heartbeatRuntime, recoverRuntimeIfInterrupted } from "../core/runtime.js";
 import { currentWindow } from "../lib/time.js";
 import { loadApprovals, recordApprovalRequest } from "../core/approvals.js";
 import { missingApprovalTag, permissionSettings, resolvePermissionProfile, type ResolvedPermissionProfile } from "../lib/permissions.js";
-import { relative, resolve as resolvePath } from "node:path";
+import { basename, relative, resolve as resolvePath } from "node:path";
 import { readFile } from "node:fs/promises";
 import { applyPolicyAction, policyActionFor } from "../lib/policy.js";
 import { runStageCommandHooks } from "../core/command-bridge.js";
@@ -22,6 +22,9 @@ import { runStageValidators, runWorkspacePreflight } from "../core/validators.js
 import { writeSectionOutput } from "../core/section-output.js";
 import type { CommandRunResult, ValidatorResult } from "../types.js";
 import { gcPluginSandbox, preparePluginSandbox, resolveInjectionProfile, resolveManagedInjectionProfile, type ResolvedInjectionProfile } from "../lib/injections.js";
+import { classifySectionRecovery } from "../core/self-healing.js";
+import { buildCompiledProgram } from "./compile.js";
+import { syncSectionStateFromTask } from "../core/section-state.js";
 
 interface RunLoopResult {
   ran: boolean;
@@ -36,6 +39,20 @@ const EMPTY_EXPLORATION_STATE: ExplorationState = {
   last_taskx_path: null,
   updated_at: null,
 };
+
+let stateMutationQueue: Promise<unknown> = Promise.resolve();
+
+async function withStateMutation<T>(fn: () => Promise<T>): Promise<T> {
+  const run = stateMutationQueue.then(fn, fn);
+  stateMutationQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function heartbeatRuntimeSerial(paths: ReturnType<typeof statePaths>, patch?: Parameters<typeof heartbeatRuntime>[1]): Promise<void> {
+  await withStateMutation(async () => {
+    await heartbeatRuntime(paths, patch);
+  });
+}
 
 function injectedSkillNames(profile: ResolvedInjectionProfile): string[] {
   return [
@@ -144,13 +161,185 @@ async function configWithCompiledProgram(config: TnsConfig, paths: ReturnType<ty
   if (!program.entry || !Array.isArray(program.states)) {
     return config;
   }
-  return { ...config, program: program as FsmProgramSettings };
+  return { ...config, program: program as FsmProgramSettings, _program_from_compiled: true };
+}
+
+function compileSourceConfig(config: TnsConfig): TnsConfig {
+  if (!config._program_from_compiled) {
+    return config;
+  }
+  const source = { ...config };
+  delete source.program;
+  delete source._program_from_compiled;
+  return source;
+}
+
+function canAutoRecompileProgram(config: TnsConfig): boolean {
+  return !config.program || Boolean(config._program_from_compiled);
+}
+
+async function refreshCompiledProgram(
+  config: TnsConfig,
+  paths: ReturnType<typeof statePaths>,
+  reason: string,
+  meta?: Record<string, unknown>,
+  options?: { allowExplicitProgram?: boolean }
+): Promise<boolean> {
+  if (!canAutoRecompileProgram(config) && !options?.allowExplicitProgram) {
+    return false;
+  }
+  const compiled = await buildCompiledProgram(options?.allowExplicitProgram ? config : compileSourceConfig(config), paths);
+  await writeJson(paths.compiled_program, compiled);
+  const diagnostics = await readJson<Record<string, unknown>>(paths.diagnostics, {});
+  await writeJson(paths.diagnostics, {
+    ...(diagnostics ?? {}),
+    updated_at: iso(utcNow()),
+    last_recovery_decision: {
+      action: "recompile",
+      reason,
+      at: iso(utcNow()),
+      ...meta,
+    },
+  });
+  await appendJsonl(paths.activity, {
+    event: "auto_recompile",
+    at: iso(utcNow()),
+    reason,
+    compiled_program: paths.compiled_program,
+    ...meta,
+  });
+  return true;
+}
+
+async function currentTaskDigest(config: TnsConfig): Promise<{ filename: string; section_count: number; bytes: number }> {
+  const taskText = await readFile(config.product_doc, "utf-8");
+  return {
+    filename: basename(config.product_doc),
+    section_count: parseSections(config.product_doc).length,
+    bytes: Buffer.byteLength(taskText, "utf8"),
+  };
+}
+
+async function ensureCompiledProgramFresh(config: TnsConfig, paths: ReturnType<typeof statePaths>): Promise<void> {
+  const compiled = await readJson<Record<string, unknown>>(paths.compiled_program);
+  if (!compiled) {
+    const requestedThreads = Math.max(1, Number(config.threads ?? config.thread ?? 1));
+    if (requestedThreads > 1) {
+      await refreshCompiledProgram(
+        config,
+        paths,
+        "compiled program missing for multi-thread run",
+        { trigger: "missing_compiled_program" },
+        { allowExplicitProgram: true }
+      );
+    }
+    return;
+  }
+
+  const digest = await currentTaskDigest(config);
+  const workspace = compiled.workspace && typeof compiled.workspace === "object" ? compiled.workspace as Record<string, unknown> : {};
+  const compiledDigest = workspace.task_digest && typeof workspace.task_digest === "object"
+    ? workspace.task_digest as Record<string, unknown>
+    : {};
+  if (compiledDigest.bytes !== digest.bytes || compiledDigest.section_count !== digest.section_count || compiledDigest.filename !== digest.filename) {
+    await refreshCompiledProgram(
+      config,
+      paths,
+      "task document changed after compile",
+      {
+        trigger: "task_digest_mismatch",
+        previous: compiledDigest,
+        current: digest,
+      },
+      { allowExplicitProgram: true }
+    );
+  }
+}
+
+async function ensureSectionStateFresh(config: TnsConfig, paths: ReturnType<typeof statePaths>): Promise<void> {
+  await syncSectionStateFromTask(config.product_doc, paths, "task document sections changed after state initialization");
+}
+
+async function applyRuntimeRecoveryDecisions(
+  config: TnsConfig,
+  paths: ReturnType<typeof statePaths>,
+  sections: Section[],
+  maxAttempts: number
+): Promise<{ sections: Section[]; changed: boolean; recompiled: boolean }> {
+  let changed = false;
+  let recompiled = false;
+  for (const section of sections) {
+    ensureSectionDefaults(section);
+    if (!["pending", "needs_fix", "blocked"].includes(section.status)) continue;
+    if (section.status === "blocked" && /^(Runtime diagnosis|Execution exhausted)/.test(section.last_review)) continue;
+    if (section.attempts < maxAttempts && section.status !== "blocked") continue;
+
+    const decision = classifySectionRecovery(section, maxAttempts);
+    const diagnostics = await readJson<Record<string, unknown>>(paths.diagnostics, {});
+    await writeJson(paths.diagnostics, {
+      ...(diagnostics ?? {}),
+      updated_at: iso(utcNow()),
+      last_recovery_decision: {
+        section: section.id,
+        status: section.status,
+        attempts: section.attempts,
+        category: decision.category,
+        reason: decision.reason,
+        signals: decision.signals,
+        at: iso(utcNow()),
+      },
+    });
+    await appendJsonl(paths.activity, {
+      event: "runtime_recovery_decision",
+      at: iso(utcNow()),
+      section: section.id,
+      category: decision.category,
+      reason: decision.reason,
+      signals: decision.signals,
+      attempts: section.attempts,
+    });
+
+    if (decision.category === "execution_retry") {
+      continue;
+    }
+
+    if (decision.category === "orchestration_recompile") {
+      const compiled = await refreshCompiledProgram(config, paths, decision.reason, {
+        trigger: "runtime_recovery_decision",
+        section: section.id,
+        signals: decision.signals,
+      });
+      if (compiled) {
+        section.status = "pending";
+        section.attempts = 0;
+        section.current_step = "";
+        section.last_review = `Auto recompiled orchestration after runtime diagnosis: ${decision.reason}`;
+        changed = true;
+        recompiled = true;
+        continue;
+      }
+      section.status = "blocked";
+      section.current_step = "";
+      section.last_review = `Runtime diagnosis requires program redesign, but config.program is explicit and was not auto-edited: ${decision.reason}`;
+      changed = true;
+      continue;
+    }
+
+    section.status = "blocked";
+    section.current_step = "";
+    section.last_review = `Execution exhausted without orchestration signals; manual review required before retry. ${decision.reason}`;
+    changed = true;
+  }
+
+  return { sections, changed, recompiled };
 }
 
 export async function cmdRun(args: { config: string; once?: boolean; poll_seconds?: number }): Promise<void> {
   const initialConfig = loadConfig(args.config);
   await withResourceLocks(initialConfig.workspace, ["workspace", "runner", "state"], "tns run", async () => {
     const paths = await ensureInitialized(initialConfig, { autoInit: true });
+    await ensureCompiledProgramFresh(initialConfig, paths);
+    await ensureSectionStateFresh(initialConfig, paths);
     const config = await configWithCompiledProgram(initialConfig, paths);
     const manifest = await loadManifest(paths);
     await recoverRuntimeIfInterrupted(paths);
@@ -409,7 +598,7 @@ async function runExplorationPass(config: TnsConfig, paths: ReturnType<typeof st
       blocker: result.blocker,
       summary: result.summary,
     });
-    await heartbeatRuntime(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+    await heartbeatRuntimeSerial(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
     return { ran: false };
   }
 
@@ -429,7 +618,7 @@ async function runExplorationPass(config: TnsConfig, paths: ReturnType<typeof st
       summary: result.summary,
     });
     await rebuildArtifactIndex(paths);
-    await heartbeatRuntime(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+    await heartbeatRuntimeSerial(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
     return { ran: imported > 0 };
   }
 
@@ -458,6 +647,444 @@ async function normalizeFreeze(paths: ReturnType<typeof statePaths>): Promise<{ 
   return {
     blocked: true,
     nextWakeAt: !Number.isNaN(until) ? new Date(until).toISOString() : null,
+  };
+}
+
+async function loadCompiledParallelPlan(paths: ReturnType<typeof statePaths>): Promise<FsmParallelPlan | null> {
+  const compiled = await readJson<Record<string, unknown>>(paths.compiled_program);
+  const inputs = compiled?.inputs && typeof compiled.inputs === "object" && !Array.isArray(compiled.inputs)
+    ? compiled.inputs as Record<string, unknown>
+    : {};
+  const orchestration = compiled?.orchestration && typeof compiled.orchestration === "object" && !Array.isArray(compiled.orchestration)
+    ? compiled.orchestration as Record<string, unknown>
+    : {};
+  const candidate = orchestration.parallel_plan ?? inputs.parallel_plan;
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const plan = candidate as Partial<FsmParallelPlan>;
+  if (!plan.enabled || !Array.isArray(plan.batches)) return null;
+  return plan as FsmParallelPlan;
+}
+
+function sectionReadyForParallel(section: Section, maxAttempts: number): boolean {
+  ensureSectionDefaults(section);
+  if (section.status !== "pending" && section.status !== "needs_fix") return false;
+  return section.attempts < maxAttempts || section.status === "needs_fix";
+}
+
+function selectParallelBatch(plan: FsmParallelPlan, sections: Section[], maxAttempts: number): FsmParallelPlanItem[] {
+  const byId = new Map(sections.map((section) => [section.id, ensureSectionDefaults(section)]));
+  const done = new Set(sections.filter((section) => ensureSectionDefaults(section).status === "done").map((section) => section.id));
+  for (const batch of plan.batches) {
+    const states = batch.states ?? [];
+    if (states.length === 0) continue;
+    const blockedByDeps = states.some((item) => !item.depends_on.every((dep) => done.has(dep)));
+    if (blockedByDeps) continue;
+    const runnable = states.filter((item) => {
+      const section = byId.get(item.state);
+      return section ? sectionReadyForParallel(section, maxAttempts) : false;
+    });
+    if (runnable.length > 1) {
+      return runnable.slice(0, Math.max(1, plan.max_threads));
+    }
+    if (runnable.length === 1) {
+      return [];
+    }
+    const unfinished = states.some((item) => {
+      const section = byId.get(item.state);
+      return section && section.status !== "done" && section.status !== "blocked";
+    });
+    if (unfinished) return [];
+  }
+  return [];
+}
+
+async function updateSectionOnly(paths: ReturnType<typeof statePaths>, sectionId: string, updater: (section: Section) => void): Promise<Section> {
+  return withStateMutation(async () => {
+    const sections = ((await readJson<Section[]>(paths.sections)) || []).map(ensureSectionDefaults);
+    const section = sections.find((item) => item.id === sectionId);
+    if (!section) throw new Error(`section not found: ${sectionId}`);
+    updater(section);
+    await writeJson(paths.sections, sections);
+    return { ...section };
+  });
+}
+
+async function appendReviewRecord(paths: ReturnType<typeof statePaths>, review: ReviewRecord): Promise<void> {
+  await withStateMutation(async () => {
+    const reviews: ReviewRecord[] = (await readJson<ReviewRecord[]>(paths.reviews)) || [];
+    reviews.push(review);
+    await writeJson(paths.reviews, reviews);
+  });
+}
+
+async function requestApprovalForSection(
+  config: TnsConfig,
+  paths: ReturnType<typeof statePaths>,
+  section: Section,
+  step: string,
+  permissionProfile: ResolvedPermissionProfile,
+  approvalTag: string
+): Promise<void> {
+  const reason = `Approval tag '${approvalTag}' is required for profile '${permissionProfile.profile_name}' before ${section.title} (${step}) can run.`;
+  await updateSectionOnly(paths, section.id, (item) => {
+    item.status = "pending";
+    item.last_review = reason;
+    item.current_step = "";
+  });
+  await recordApprovalRequest(paths, {
+    tag: approvalTag,
+    section_id: section.id,
+    section_title: section.title,
+    step,
+    profile: permissionProfile.profile_name,
+    reason,
+  });
+  await withStateMutation(async () => {
+    await writeJson(paths.freeze, {
+      reason: `approval_required:${approvalTag}`,
+      at: iso(utcNow()),
+      window: currentWindow(await loadManifest(paths)).index,
+      approval_tag: approvalTag,
+      profile: permissionProfile.profile_name,
+      section: section.id,
+      step,
+    });
+  });
+  await appendJsonl(paths.activity, {
+    event: "approval_required",
+    at: iso(utcNow()),
+    section: section.id,
+    step,
+    approval_tag: approvalTag,
+    profile: permissionProfile.profile_name,
+    reason,
+  });
+}
+
+async function executeParallelSectionWorkflow(
+  config: TnsConfig,
+  paths: ReturnType<typeof statePaths>,
+  sectionId: string,
+  policies: ReturnType<typeof policySettings>
+): Promise<RunLoopResult> {
+  let selected = await updateSectionOnly(paths, sectionId, (section) => {
+    ensureSectionDefaults(section);
+  });
+  const wf = workflowSettings(config);
+  const nodeMap = new Map(wf.agents.map((n) => [n.id, n]));
+  let currentStep = selected.current_step || wf.entry;
+  const stepResults: { node_id: string; payload: Record<string, unknown>; usage: unknown }[] = [];
+  const validatorResults: ValidatorResult[] = [];
+  const commandRuns: CommandRunResult[] = [];
+  const priorResults: Record<string, Record<string, unknown>> = {};
+
+  const initialPermissionProfile = resolvePermissionProfile(config, selected, currentStep);
+  const approvals = await loadApprovals(paths);
+  const missingApproval = missingApprovalTag(approvals, initialPermissionProfile);
+  if (missingApproval) {
+    await requestApprovalForSection(config, paths, selected, currentStep, initialPermissionProfile, missingApproval);
+    await heartbeatRuntimeSerial(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+    return { ran: false };
+  }
+
+  selected = await updateSectionOnly(paths, selected.id, (section) => {
+    section.status = "in_progress";
+    section.attempts = (section.attempts || 0) + 1;
+    section.current_step = currentStep;
+  });
+  await heartbeatRuntimeSerial(paths, { current_section: `parallel:${selected.id}`, current_step: currentStep, sleep_until: null, ...clearAgentRuntimeFields() });
+
+  try {
+    for (let step = 0; step < wf.max_steps_per_run; step++) {
+      const node = nodeMap.get(currentStep);
+      if (!node) throw new Error(`workflow step not found: ${currentStep}`);
+      const permissionProfile = resolvePermissionProfile(config, selected, currentStep);
+      const latestApprovals = await loadApprovals(paths);
+      const stepMissingApproval = missingApprovalTag(latestApprovals, permissionProfile);
+      if (stepMissingApproval) {
+        await requestApprovalForSection(config, paths, selected, currentStep, permissionProfile, stepMissingApproval);
+        await heartbeatRuntimeSerial(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+        return { ran: false };
+      }
+
+      const preCommands = await runStageCommandHooks(paths, config, "pre_step", selected, currentStep);
+      commandRuns.push(...preCommands);
+      const failedPreCommands = preCommands.filter((item) => !item.ok);
+      if (failedPreCommands.length > 0) {
+        const sectionForPolicy = await updateSectionOnly(paths, selected.id, (item) => Object.assign(selected, item));
+        const outcome = await applyPolicyAction(
+          paths,
+          policyActionFor(policies, "command_failure"),
+          sectionForPolicy,
+          summarizeFailures(failedPreCommands.map((item) => ({ id: item.id, message: item.stderr || `exit ${item.exit_code}` }))),
+          { stage: "pre_step", step: currentStep, command_sets: failedPreCommands.map((item) => item.id) }
+        );
+        await updateSectionOnly(paths, sectionForPolicy.id, (item) => Object.assign(item, sectionForPolicy));
+        await persistSectionOutputIfEnabled(config, paths, sectionForPolicy, stepResults, validatorResults, commandRuns);
+        if (outcome === "failed") throw new Error(`pre-step command hook failed: ${failedPreCommands.map((item) => item.id).join(", ")}`);
+        return { ran: false };
+      }
+
+      const preValidators = await runStageValidators(paths, config, "pre_step", selected, currentStep);
+      validatorResults.push(...preValidators);
+      const failedPreValidators = preValidators.filter((item) => !item.ok);
+      if (failedPreValidators.length > 0) {
+        const sectionForPolicy = await updateSectionOnly(paths, selected.id, (item) => Object.assign(selected, item));
+        const outcome = await applyPolicyAction(
+          paths,
+          policyActionFor(policies, "validator_failure", "pre_step"),
+          sectionForPolicy,
+          summarizeFailures(failedPreValidators),
+          { stage: "pre_step", validator_ids: failedPreValidators.map((item) => item.id) }
+        );
+        await updateSectionOnly(paths, sectionForPolicy.id, (item) => Object.assign(item, sectionForPolicy));
+        await persistSectionOutputIfEnabled(config, paths, sectionForPolicy, stepResults, validatorResults, commandRuns);
+        if (outcome === "failed") throw new Error(`pre-step validators failed: ${failedPreValidators.map((item) => item.id).join(", ")}`);
+        return { ran: false };
+      }
+
+      const schema = schemaByName(node.schema || node.id);
+      const mode = currentStep === "verifier" ? "verifier" : "executor";
+      const injectionProfile = await resolveManagedInjectionProfile(config, mode, selected, currentStep);
+      const runId = `${selected.id}-${currentStep}-${Date.now()}`;
+      const pluginSandbox = await preparePluginSandbox(paths, injectionProfile, runId, config);
+      const injectedSkills = injectedSkillNames(injectionProfile);
+      const prompt = await buildPrompt(paths, selected, node, priorResults, permissionProfile, injectionProfile);
+      const agentConfig = configForAgentMode(config, mode);
+
+      await appendJsonl(paths.activity, {
+        event: "agent_start",
+        at: iso(utcNow()),
+        section: selected.id,
+        step: currentStep,
+        agent: node.agent,
+        permission_profile: permissionProfile.profile_name,
+        approval_tag: permissionProfile.approval_tag,
+        injection_profile: injectionProfile.profile_name,
+        injected_skills: injectedSkills,
+        parallel: true,
+      });
+
+      let result: { payload: Record<string, unknown>; usage: Record<string, unknown> };
+      try {
+        const agentResult = await runAgent(agentConfig, paths.workspace, node.agent, schema, prompt, {
+          onHeartbeat: async (snapshot) => {
+            await heartbeatRuntimeSerial(paths, {
+              current_section: `parallel:${selected.id}`,
+              current_step: currentStep,
+              current_agent: snapshot.agent,
+              agent_pid: snapshot.pid,
+              agent_started_at: snapshot.started_at,
+              agent_deadline_at: snapshot.deadline_at,
+              sleep_until: null,
+            });
+          },
+          plugin_dir: pluginSandbox.plugin_root,
+          extra_add_dirs: pluginSandbox.add_dirs,
+          paths,
+          metadata: {
+            run_id: runId,
+            agent_mode: mode,
+            section_id: selected.id,
+            step: currentStep,
+            injection_profile: injectionProfile.profile_name,
+            injected_skills: injectedSkills,
+          },
+          permissions: {
+            permission_mode: permissionProfile.permission_mode,
+            allowed_tools: permissionProfile.allowed_tools,
+            disallowed_tools: permissionProfile.disallowed_tools,
+          },
+        });
+        result = { payload: agentResult.payload as unknown as Record<string, unknown>, usage: agentResult.usage as unknown as Record<string, unknown> };
+      } catch (exc: unknown) {
+        const message = String(exc);
+        if (looksLikeUsageLimitError(message)) {
+          await appendJsonl(paths.activity, { event: "usage_limit_error", at: iso(utcNow()), section: selected.id, error: message });
+          await updateSectionOnly(paths, selected.id, (section) => {
+            section.status = "pending";
+            section.last_review = "Recovered after usage limit.";
+          });
+          const manifest = await loadManifest(paths);
+          const until = currentWindow(manifest).end.toISOString();
+          await withStateMutation(async () => {
+            await writeJson(paths.freeze, { reason: `usage_limit: ${message}`, at: iso(utcNow()), until, window: currentWindow(manifest).index });
+          });
+          return { ran: false, nextWakeAt: until };
+        }
+        if (looksLikeRetryableError(message)) {
+          await appendJsonl(paths.activity, { event: "transient_error", at: iso(utcNow()), section: selected.id, step: currentStep, error: message });
+          await updateSectionOnly(paths, selected.id, (section) => {
+            section.status = "needs_fix";
+            section.last_review = `Transient error (will retry): ${message.slice(0, 200)}`;
+          });
+          return { ran: false };
+        }
+        throw exc;
+      } finally {
+        await gcPluginSandbox(paths, runId, pluginSandbox.plugin_root);
+      }
+
+      const { payload, usage } = result;
+      const filesTouched = Array.isArray(payload.files_touched) ? payload.files_touched.filter((item): item is string => typeof item === "string") : [];
+      ensureFilesTouchedStayInWorkspace(paths.workspace, filesTouched);
+      priorResults[currentStep] = payload;
+      stepResults.push({ node_id: currentStep, payload, usage });
+      appendHandoff(paths.handoff, currentStep.charAt(0).toUpperCase() + currentStep.slice(1), payload, selected.id);
+      await appendJsonl(paths.activity, { event: "agent_end", at: iso(utcNow()), section: selected.id, step: currentStep, agent: node.agent, result: payload, usage, parallel: true });
+
+      const postCommands = await runStageCommandHooks(paths, config, "post_step", selected, currentStep);
+      commandRuns.push(...postCommands);
+      const failedPostCommands = postCommands.filter((item) => !item.ok);
+      if (failedPostCommands.length > 0) {
+        const sectionForPolicy = await updateSectionOnly(paths, selected.id, (item) => Object.assign(selected, item));
+        const outcome = await applyPolicyAction(
+          paths,
+          policyActionFor(policies, "command_failure"),
+          sectionForPolicy,
+          summarizeFailures(failedPostCommands.map((item) => ({ id: item.id, message: item.stderr || `exit ${item.exit_code}` }))),
+          { stage: "post_step", step: currentStep, command_sets: failedPostCommands.map((item) => item.id) }
+        );
+        await updateSectionOnly(paths, sectionForPolicy.id, (item) => Object.assign(item, sectionForPolicy));
+        await persistSectionOutputIfEnabled(config, paths, sectionForPolicy, stepResults, validatorResults, commandRuns);
+        if (outcome === "failed") throw new Error(`post-step command hook failed: ${failedPostCommands.map((item) => item.id).join(", ")}`);
+        return { ran: false };
+      }
+
+      const postValidators = await runStageValidators(paths, config, "post_step", selected, currentStep);
+      validatorResults.push(...postValidators);
+      const failedPostValidators = postValidators.filter((item) => !item.ok);
+      if (failedPostValidators.length > 0) {
+        const sectionForPolicy = await updateSectionOnly(paths, selected.id, (item) => Object.assign(selected, item));
+        const outcome = await applyPolicyAction(
+          paths,
+          policyActionFor(policies, "validator_failure", "post_step"),
+          sectionForPolicy,
+          summarizeFailures(failedPostValidators),
+          { stage: "post_step", step: currentStep, validator_ids: failedPostValidators.map((item) => item.id) }
+        );
+        await updateSectionOnly(paths, sectionForPolicy.id, (item) => Object.assign(item, sectionForPolicy));
+        await persistSectionOutputIfEnabled(config, paths, sectionForPolicy, stepResults, validatorResults, commandRuns);
+        if (outcome === "failed") throw new Error(`post-step validators failed: ${failedPostValidators.map((item) => item.id).join(", ")}`);
+        return { ran: false };
+      }
+
+      const transition = firstMatchingTransition(payload, node);
+      const localReviews: ReviewRecord[] = [];
+      const transitioned = { ...selected };
+      applyTransitionToSection([transitioned], localReviews, transitioned, payload, transition, currentStep);
+      selected = await updateSectionOnly(paths, selected.id, (section) => Object.assign(section, transitioned));
+      for (const review of localReviews) {
+        await appendReviewRecord(paths, review);
+      }
+      currentStep = selected.current_step || "";
+      await heartbeatRuntimeSerial(paths, { current_section: `parallel:${selected.id}`, current_step: currentStep, ...clearAgentRuntimeFields() });
+      if (transition.end || !currentStep) break;
+    }
+
+    selected = await updateSectionOnly(paths, selected.id, (section) => {
+      if (section.status === "in_progress") {
+        section.status = "needs_fix";
+        section.last_review = "Workflow exceeded max_steps_per_run.";
+      }
+    });
+    const postRunValidators = await runStageValidators(paths, config, "post_run", selected, selected.current_step || "post_run");
+    validatorResults.push(...postRunValidators);
+    const failedPostRunValidators = postRunValidators.filter((item) => !item.ok);
+    if (failedPostRunValidators.length > 0) {
+      const outcome = await applyPolicyAction(
+        paths,
+        policyActionFor(policies, "validator_failure", "post_run"),
+        selected,
+        summarizeFailures(failedPostRunValidators),
+        { stage: "post_run", validator_ids: failedPostRunValidators.map((item) => item.id) }
+      );
+      await updateSectionOnly(paths, selected.id, (section) => Object.assign(section, selected));
+      await persistSectionOutputIfEnabled(config, paths, selected, stepResults, validatorResults, commandRuns);
+      if (outcome === "failed") throw new Error(`post-run validators failed: ${failedPostRunValidators.map((item) => item.id).join(", ")}`);
+      return { ran: false };
+    }
+    await persistSectionOutputIfEnabled(config, paths, selected, stepResults, validatorResults, commandRuns);
+  } catch (exc: unknown) {
+    const message = String(exc).slice(0, 500);
+    await updateSectionOnly(paths, selected.id, (section) => {
+      if (section.status === "in_progress") {
+        section.status = "needs_fix";
+        section.last_review = `Run error (will retry): ${message}`;
+        section.current_step = "";
+      }
+    });
+    await withStateMutation(async () => {
+      const diagnostics = await readJson<Record<string, unknown>>(paths.diagnostics, {});
+      await writeJson(paths.diagnostics, {
+        ...(diagnostics ?? {}),
+        updated_at: iso(utcNow()),
+        last_error: message,
+      });
+    });
+    await appendJsonl(paths.activity, { event: "run_error", at: iso(utcNow()), section: selected.id, error: message, parallel: true });
+    return { ran: false };
+  }
+
+  return { ran: true };
+}
+
+async function runParallelBatchIfReady(
+  config: TnsConfig,
+  paths: ReturnType<typeof statePaths>,
+  sections: Section[],
+  maxAttempts: number,
+  policies: ReturnType<typeof policySettings>
+): Promise<RunLoopResult | null> {
+  const plan = await loadCompiledParallelPlan(paths);
+  if (!plan) return null;
+  const runnable = selectParallelBatch(plan, sections, maxAttempts);
+  if (runnable.length <= 1) return null;
+
+  const wf = workflowSettings(config);
+  const approvals = await loadApprovals(paths);
+  const byId = new Map(sections.map((section) => [section.id, ensureSectionDefaults(section)]));
+  for (const item of runnable) {
+    const section = byId.get(item.state);
+    if (!section) continue;
+    const step = section.current_step || wf.entry;
+    const permissionProfile = resolvePermissionProfile(config, section, step);
+    const missingApproval = missingApprovalTag(approvals, permissionProfile);
+    if (missingApproval) {
+      await requestApprovalForSection(config, paths, section, step, permissionProfile, missingApproval);
+      await heartbeatRuntimeSerial(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+      return { ran: false };
+    }
+  }
+
+  await appendJsonl(paths.activity, {
+    event: "parallel_batch_start",
+    at: iso(utcNow()),
+    states: runnable.map((item) => item.state),
+    max_threads: plan.max_threads,
+  });
+  await heartbeatRuntimeSerial(paths, { current_section: `parallel:${runnable.map((item) => item.state).join(",")}`, current_step: "batch", sleep_until: null, ...clearAgentRuntimeFields() });
+
+  const settled = await Promise.allSettled(runnable.map((item) => executeParallelSectionWorkflow(config, paths, item.state, policies)));
+  await appendJsonl(paths.activity, {
+    event: "parallel_batch_end",
+    at: iso(utcNow()),
+    results: settled.map((result, index) => ({
+      state: runnable[index].state,
+      status: result.status,
+      ran: result.status === "fulfilled" ? result.value.ran : false,
+      error: result.status === "rejected" ? String(result.reason).slice(0, 500) : null,
+    })),
+  });
+  await rebuildArtifactIndex(paths);
+  await heartbeatRuntimeSerial(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+  const nextWakeAt = settled
+    .filter((result): result is PromiseFulfilledResult<RunLoopResult> => result.status === "fulfilled")
+    .map((result) => result.value.nextWakeAt)
+    .find((item): item is string => typeof item === "string");
+  return {
+    ran: settled.some((result) => result.status === "fulfilled" && result.value.ran),
+    nextWakeAt: nextWakeAt ?? null,
   };
 }
 
@@ -510,6 +1137,19 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
 
   sections = sections.map(ensureSectionDefaults);
   const maxAttempts = attemptsSettings(config).max_per_section;
+  const recovery = await applyRuntimeRecoveryDecisions(config, paths, sections, maxAttempts);
+  sections = recovery.sections;
+  if (recovery.changed) {
+    await writeJson(paths.sections, sections);
+    if (recovery.recompiled) {
+      await heartbeatRuntime(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+      return { ran: false };
+    }
+  }
+  const parallelResult = await runParallelBatchIfReady(config, paths, sections, maxAttempts, policies);
+  if (parallelResult) {
+    return parallelResult;
+  }
   const selected = selectSection(sections, maxAttempts);
 
   if (!selected) {

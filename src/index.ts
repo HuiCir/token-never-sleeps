@@ -17,8 +17,6 @@ import { cmdDoctor } from "./commands/doctor.js";
 import { cmdRecover } from "./commands/recover.js";
 import { cmdTrace } from "./commands/trace.js";
 import { cmdCompile } from "./commands/compile.js";
-import { cmdSimulate } from "./commands/simulate.js";
-import { cmdParallelDemo } from "./commands/parallel-demo.js";
 import { cmdSkills } from "./commands/skills.js";
 
 interface CommonArgs {
@@ -33,13 +31,13 @@ async function main() {
   }
   const argv = await yargs(rawArgs)
     .command("help [topic]", "Show TNS help", (y) =>
-      y.positional("topic", { type: "string", choices: ["init", "run", "config", "permissions", "exploration", "status", "tmux", "btw", "policy", "doctor", "compile", "fsm", "skills"] })
+      y.positional("topic", { type: "string", choices: ["init", "run", "config", "permissions", "exploration", "status", "tmux", "btw", "policy", "doctor", "compile", "skills"] })
     )
     .command("init", "Initialize TNS state or scaffold a workspace", (y) =>
       y.option("config", { type: "string" })
         .option("workspace", { type: "string" })
         .option("task", { type: "string" })
-        .option("template", { type: "string", choices: ["blank", "novel-writing", "fsm-control-flow"], default: "blank" })
+        .option("template", { type: "string", choices: ["blank", "novel-writing"], default: "blank" })
         .option("runner", { type: "string", choices: ["auto", "direct", "tmux"], default: "auto" })
         .option("force", { type: "boolean", default: false })
     )
@@ -48,18 +46,6 @@ async function main() {
       y.option("config", { type: "string", demandOption: true })
         .option("synthesize", { type: "boolean", default: false })
         .option("apply", { type: "boolean", default: false })
-    )
-    .command("simulate", "Simulate the compiled/configured FSM program", (y) =>
-      y.option("config", { type: "string", demandOption: true })
-        .option("set", { type: "array" })
-        .option("max-steps", { type: "number" })
-        .option("compact", { type: "boolean", default: false })
-    )
-    .command("parallel-demo", "Run a manual two-Claude-thread functional demo", (y) =>
-      y.option("config", { type: "string", demandOption: true })
-        .option("scenario", { type: "string", choices: ["independent", "collaborative", "both"], default: "both" })
-        .option("agent-timeout-seconds", { type: "number", default: 120 })
-        .option("keep-sandboxes", { type: "boolean", default: false })
     )
     .command("skills", "Inspect configured skillbases", (y) =>
       y.option("config", { type: "string" })
@@ -141,19 +127,13 @@ async function main() {
       await cmdHelp(args as unknown as { topic?: string });
       break;
     case "init":
-      await cmdInit(args as unknown as { config?: string; workspace?: string; task?: string; template?: "blank" | "novel-writing" | "fsm-control-flow"; runner?: "auto" | "direct" | "tmux"; force?: boolean });
+      await cmdInit(args as unknown as { config?: string; workspace?: string; task?: string; template?: "blank" | "novel-writing"; runner?: "auto" | "direct" | "tmux"; force?: boolean });
       break;
     case "status":
       await cmdStatus(args as unknown as { config: string });
       break;
     case "compile":
       await cmdCompile(args as unknown as { config: string; synthesize?: boolean; apply?: boolean });
-      break;
-    case "simulate":
-      await cmdSimulate(args as unknown as { config: string; set?: string[]; max_steps?: number; maxSteps?: number; compact?: boolean });
-      break;
-    case "parallel-demo":
-      await cmdParallelDemo(args as unknown as { config: string; scenario?: "independent" | "collaborative" | "both"; agent_timeout_seconds?: number; agentTimeoutSeconds?: number; keep_sandboxes?: boolean; keepSandboxes?: boolean });
       break;
     case "skills":
       await cmdSkills(args as unknown as { config?: string; action?: string; name?: string; source?: string[]; text?: string; file?: string; limit?: number; compact?: boolean });

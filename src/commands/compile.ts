@@ -29,6 +29,8 @@ import { withResourceLocks } from "../lib/lock.js";
 import { gcPluginSandbox, preparePluginSandbox, resolveInjectionProfile } from "../lib/injections.js";
 import { buildParallelPlan } from "../core/fsm.js";
 import { enrichProgramWithSectionImports, programNeedsSkillMaterialization } from "../lib/skill-planning.js";
+import { inferSectionDependencies } from "../core/dependency-graph.js";
+import { syncSectionStateFromTask } from "../core/section-state.js";
 
 function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values.filter((item) => item.trim().length > 0))).sort();
@@ -99,6 +101,7 @@ function collectToolUniverse(config: TnsConfig): string[] {
 function stripInternalConfig(config: TnsConfig): Record<string, unknown> {
   const clone = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
   delete clone._config_path;
+  delete clone._program_from_compiled;
   return clone;
 }
 
@@ -372,10 +375,15 @@ function mergeCompilerPatch(config: TnsConfig, patch: CompilerPatch): Record<str
 
 function buildDerivedSectionProgram(config: TnsConfig): FsmProgramSettings {
   const sections = parseSections(config.product_doc);
+  const dependencyGraph = inferSectionDependencies(sections);
   const states: FsmStateSpec[] = sections.map((section, index) => ({
     id: section.id,
     type: "task" as const,
     description: section.title,
+    parallel: {
+      depends_on: dependencyGraph.dependencies[section.id] ?? [],
+      resource: `section:${section.id}`,
+    },
     on_enter: [
       { op: "set" as const, path: "current_section", value: section.id },
       { op: "append" as const, path: "visited_sections", value: section.id },
@@ -408,9 +416,10 @@ function buildDerivedSectionProgram(config: TnsConfig): FsmProgramSettings {
   };
 }
 
-async function buildCompiledProgram(config: TnsConfig, paths: ReturnType<typeof statePaths>) {
+export async function buildCompiledProgram(config: TnsConfig, paths: ReturnType<typeof statePaths>) {
   const sections = parseSections(config.product_doc);
   const taskText = await readFile(config.product_doc, "utf-8");
+  const sectionDependencyGraph = inferSectionDependencies(sections);
   const normalizedProgram = enrichProgramWithSectionImports(programSettings(config) ?? buildDerivedSectionProgram(config), config);
   const parallelPlan = buildParallelPlan(normalizedProgram);
   return {
@@ -449,7 +458,11 @@ async function buildCompiledProgram(config: TnsConfig, paths: ReturnType<typeof 
         title: section.title,
         anchor: section.anchor,
         body: section.body,
+        depends_on: sectionDependencyGraph.dependencies[section.id] ?? [],
+        produced_files: sectionDependencyGraph.produced_files[section.id] ?? [],
+        referenced_files: sectionDependencyGraph.referenced_files[section.id] ?? [],
       })),
+      section_dependency_graph: sectionDependencyGraph,
       program: normalizedProgram,
       parallel_plan: parallelPlan,
     },
@@ -590,6 +603,7 @@ export async function cmdCompile(args: { config: string; synthesize?: boolean; a
     let activeConfig = initialConfig;
     let compiled = await buildCompiledProgram(activeConfig, paths);
     await writeJson(paths.compiled_program, compiled);
+    await syncSectionStateFromTask(activeConfig.product_doc, paths, "compile synchronized task sections");
 
     let compilerReview: CompilerResult | null = null;
     if (args.synthesize || args.apply) {
@@ -603,6 +617,7 @@ export async function cmdCompile(args: { config: string; synthesize?: boolean; a
       activeConfig = loadConfig(activeConfig._config_path || args.config);
       compiled = await buildCompiledProgram(activeConfig, paths);
       await writeJson(paths.compiled_program, compiled);
+      await syncSectionStateFromTask(activeConfig.product_doc, paths, "compile apply synchronized task sections");
     }
 
     console.log(JSON.stringify({

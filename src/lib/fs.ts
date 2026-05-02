@@ -2,6 +2,8 @@ import { readFile, writeFile, appendFile, mkdir, access, constants, rm, rename }
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, accessSync, constants as fsConstants, renameSync } from "node:fs";
 import { dirname, resolve, isAbsolute } from "node:path";
 
+let atomicWriteCounter = 0;
+
 export function expandUser(path: string): string {
   if (path.startsWith("~/") || path === "~") {
     const home = process.env.HOME || process.env.USERPROFILE || "/root";
@@ -106,7 +108,7 @@ export async function atomicWriteFile(path: string, content: string): Promise<vo
   const p = expandUser(path);
   const dir = dirname(p);
   await mkdir(dir, { recursive: true });
-  const tmp = `${p}.tmp-${process.pid}-${Date.now()}`;
+  const tmp = `${p}.tmp-${process.pid}-${Date.now()}-${atomicWriteCounter++}`;
   await writeFile(tmp, content, "utf-8");
   await rename(tmp, p);
 }
@@ -115,7 +117,7 @@ export function atomicWriteFileSync(path: string, content: string): void {
   const p = expandUser(path);
   const dir = dirname(p);
   mkdirSync(dir, { recursive: true });
-  const tmp = `${p}.tmp-${process.pid}-${Date.now()}`;
+  const tmp = `${p}.tmp-${process.pid}-${Date.now()}-${atomicWriteCounter++}`;
   writeFileSync(tmp, content, "utf-8");
   renameSync(tmp, p);
 }
