@@ -17,7 +17,7 @@ import { cmdDoctor } from "./commands/doctor.js";
 import { cmdRecover } from "./commands/recover.js";
 import { cmdTrace } from "./commands/trace.js";
 import { cmdCompile } from "./commands/compile.js";
-import { cmdSkills } from "./commands/skills.js";
+import { cmdSkill, cmdSkills } from "./commands/skills.js";
 
 interface CommonArgs {
   config: string;
@@ -55,6 +55,27 @@ async function main() {
         .option("text", { type: "string" })
         .option("file", { type: "string" })
         .option("limit", { type: "number" })
+        .option("compact", { type: "boolean", default: false })
+    )
+    .command("skill [action] [name]", "Manage configured skill sources and installed skill bindings", (y) =>
+      y.positional("action", {
+        type: "string",
+        choices: ["doctor", "list", "resolve", "match", "source-list", "source-add", "source-remove", "install", "uninstall"],
+        default: "doctor",
+      })
+        .positional("name", { type: "string" })
+        .option("config", { type: "string" })
+        .option("source", { type: "array" })
+        .option("path", { type: "string" })
+        .option("id", { type: "string" })
+        .option("kind", { type: "string", choices: ["auto", "skillbase", "plugin", "skills_dir"], default: "auto" })
+        .option("priority", { type: "number" })
+        .option("profile", { type: "string" })
+        .option("mode", { type: "string", choices: ["executor", "verifier", "compile"], default: "executor" })
+        .option("text", { type: "string" })
+        .option("file", { type: "string" })
+        .option("limit", { type: "number" })
+        .option("disable-default-sources", { type: "boolean", default: false })
         .option("compact", { type: "boolean", default: false })
     )
     .command("doctor", "Run preflight and environment diagnostics", (y) =>
@@ -137,6 +158,9 @@ async function main() {
       break;
     case "skills":
       await cmdSkills(args as unknown as { config?: string; action?: string; name?: string; source?: string[]; text?: string; file?: string; limit?: number; compact?: boolean });
+      break;
+    case "skill":
+      await cmdSkill(args as unknown as { config?: string; action?: string; name?: string; source?: string[]; path?: string; id?: string; kind?: "auto" | "skillbase" | "plugin" | "skills_dir"; priority?: number; profile?: string; mode?: "executor" | "verifier" | "compile"; text?: string; file?: string; limit?: number; disable_default_sources?: boolean; disableDefaultSources?: boolean; compact?: boolean });
       break;
     case "doctor":
       await cmdDoctor(args as unknown as { config: string });

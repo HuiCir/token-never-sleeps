@@ -10,7 +10,8 @@ It keeps the core local runner behavior:
 - `tns status` shows tracked section state
 - `tns plan-import` converts a markdown plan into tracked sections
 - `tns compile` emits a deterministic orchestration program, including bounded parallel plans
-- `tns skills` inspects local skillbases and resolves stage-local skill imports
+- `tns skill` manages configured skill sources and installed skill bindings
+- `tns skills` inspects local skillbases and resolves stage-local skill imports without modifying config
 
 What this package intentionally leaves out:
 
@@ -210,6 +211,25 @@ tns skills --action list --source /abs/path/to/skillbase
 tns skills --action resolve --name pdf --source /abs/path/to/skillbase
 tns skills --action match --text "extract tables from a PDF report" --source /abs/path/to/skillbase
 ```
+
+Persist a skill source and install a skill into the runner config:
+
+```bash
+tns skill source-add --config ./tns_config.json --source /abs/path/to/skillbase
+tns skill source-list --config ./tns_config.json
+tns skill install pdf --config ./tns_config.json
+```
+
+Install can bind a source and skill in one command:
+
+```bash
+tns skill install pdf --config ./tns_config.json --source /abs/path/to/skillbase
+```
+
+By default, `install` writes the resolved skill into
+`injections.profiles.executor_task.skills` and records it in `externals.skills`.
+Use `--mode verifier` to install into `verifier_audit`, or `--profile NAME` to
+target a custom injection profile.
 
 Skill injection is stage-local:
 

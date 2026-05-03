@@ -41,8 +41,11 @@ Common commands:
   tns run-tmux --config /abs/path/to/project/tns_config.json
       Explicit tmux mode. Requires tmux.
 
+  tns skill install pdf --config /abs/path/to/project/tns_config.json --source /path/to/skillbase
+      Bind a skill source, install a named skill into a runner injection profile, and persist it.
+
   tns skills --action doctor --source /path/to/skillbase
-      Inspect skillbase/plugin skill sources, resolve imports, and match skills.
+      Inspect skillbase/plugin skill sources without modifying config.
 
 Typical flows:
   1. Create a workspace:
@@ -255,6 +258,20 @@ Inspect skill libraries without installing or modifying them:
   tns skills --action list
   tns skills --action resolve --name pdf
   tns skills --action match --text "extract tables from a PDF report"
+
+Manage configured sources and installed skill bindings:
+  tns skill source-add --config /abs/path/to/tns_config.json --source /path/to/skillbase
+  tns skill source-list --config /abs/path/to/tns_config.json
+  tns skill install pdf --config /abs/path/to/tns_config.json
+  tns skill install pdf --config /abs/path/to/tns_config.json --source /path/to/skillbase
+  tns skill uninstall pdf --config /abs/path/to/tns_config.json
+
+Install behavior:
+  - source-add persists skillbases.sources in tns_config.json.
+  - install resolves the named skill from configured/default/CLI sources.
+  - install writes the skill into injections.profiles.executor_task.skills by default.
+  - use --mode verifier to install into verifier_audit, or --profile NAME for an explicit profile.
+  - install also records the skill in externals.skills for compile-time inventory.
 
 With explicit sources:
   tns skills --action doctor --source /root/codex/skillbase --source /root/.codex/.tmp/plugins
