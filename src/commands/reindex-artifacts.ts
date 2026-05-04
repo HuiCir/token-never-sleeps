@@ -3,7 +3,7 @@ import { statePaths } from "../core/state.js";
 import { rebuildArtifactIndex } from "../core/artifacts.js";
 import { withResourceLocks } from "../lib/lock.js";
 
-export async function cmdReindexArtifacts(args: { config: string }): Promise<void> {
+export async function cmdReindexArtifacts(args: { config?: string }): Promise<void> {
   const config = loadConfig(args.config);
   await withResourceLocks(config.workspace, ["workspace", "artifacts", "state"], "tns reindex-artifacts", async () => {
     const artifacts = await rebuildArtifactIndex(statePaths(config));

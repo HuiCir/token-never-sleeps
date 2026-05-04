@@ -7,7 +7,7 @@ import { ensureSectionDefaults } from "../core/sections.js";
 import type { Section } from "../types.js";
 import { withResourceLocks } from "../lib/lock.js";
 
-export async function cmdPlanImport(args: { config: string; plan_file?: string; planFile?: string; merge: boolean }): Promise<void> {
+export async function cmdPlanImport(args: { config?: string; plan_file?: string; planFile?: string; merge: boolean }): Promise<void> {
   const config = loadConfig(args.config);
   const planPath = args.plan_file || args.planFile;
   if (!planPath) {

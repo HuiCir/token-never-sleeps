@@ -5,7 +5,7 @@ import { currentWindow } from "../lib/time.js";
 import { probeTmux } from "../lib/platform.js";
 import { runWorkspacePreflight } from "../core/validators.js";
 
-export async function cmdDoctor(args: { config: string }): Promise<void> {
+export async function cmdDoctor(args: { config?: string }): Promise<void> {
   const config = loadConfig(args.config);
   const paths = await ensureInitialized(config, { autoInit: false });
   const manifest = await loadManifest(paths);

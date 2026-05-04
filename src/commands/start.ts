@@ -4,7 +4,7 @@ import { cmdRunTmx } from "./run-tmux.js";
 import { probeTmux } from "../lib/platform.js";
 import { statePaths } from "../core/state.js";
 
-export async function cmdStart(args: { config: string; once?: boolean; poll_seconds?: number; pollSeconds?: number; restart?: boolean }): Promise<void> {
+export async function cmdStart(args: { config?: string; once?: boolean; poll_seconds?: number; pollSeconds?: number; restart?: boolean }): Promise<void> {
   const config = loadConfig(args.config);
   const settings = tmuxSettings(config);
   const paths = statePaths(config);

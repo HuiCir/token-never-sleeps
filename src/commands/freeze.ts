@@ -5,7 +5,7 @@ import { iso, utcNow, currentWindow } from "../lib/time.js";
 import type { FreezeRecord } from "../types.js";
 import { withResourceLocks } from "../lib/lock.js";
 
-export async function cmdFreeze(args: { config: string; reason?: string }): Promise<void> {
+export async function cmdFreeze(args: { config?: string; reason?: string }): Promise<void> {
   const config = loadConfig(args.config);
   await withResourceLocks(config.workspace, ["workspace", "control", "state"], "tns freeze", async () => {
     const paths = await ensureInitialized(config);
@@ -27,7 +27,7 @@ export async function cmdFreeze(args: { config: string; reason?: string }): Prom
   });
 }
 
-export async function cmdUnfreeze(args: { config: string }): Promise<void> {
+export async function cmdUnfreeze(args: { config?: string }): Promise<void> {
   const config = loadConfig(args.config);
   await withResourceLocks(config.workspace, ["workspace", "control", "state"], "tns unfreeze", async () => {
     const paths = await ensureInitialized(config);

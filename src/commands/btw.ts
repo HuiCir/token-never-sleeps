@@ -10,7 +10,7 @@ import { loadRuntime } from "../core/runtime.js";
 import { loadApprovals } from "../core/approvals.js";
 
 interface BtwArgs {
-  config: string;
+  config?: string;
   events?: number;
   reviews?: number;
 }

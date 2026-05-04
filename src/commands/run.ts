@@ -334,7 +334,7 @@ async function applyRuntimeRecoveryDecisions(
   return { sections, changed, recompiled };
 }
 
-export async function cmdRun(args: { config: string; once?: boolean; poll_seconds?: number }): Promise<void> {
+export async function cmdRun(args: { config?: string; once?: boolean; poll_seconds?: number; pollSeconds?: number }): Promise<void> {
   const initialConfig = loadConfig(args.config);
   await withResourceLocks(initialConfig.workspace, ["workspace", "runner", "state"], "tns run", async () => {
     const paths = await ensureInitialized(initialConfig, { autoInit: true });
@@ -345,8 +345,9 @@ export async function cmdRun(args: { config: string; once?: boolean; poll_second
     await recoverRuntimeIfInterrupted(paths);
     await beginRuntime(paths, "tns run", "direct", { window_index: currentWindow(manifest).index });
 
+    const pollOverride = args.poll_seconds ?? args.pollSeconds;
     const successInterval = config.success_interval_seconds || 1;
-    const idleInterval = config.idle_interval_seconds || 60;
+    const idleInterval = pollOverride ? Math.max(1, Number(pollOverride)) : (config.idle_interval_seconds || 60);
 
     try {
       while (true) {

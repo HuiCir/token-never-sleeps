@@ -8,7 +8,7 @@ import { recoverInProgressSections } from "../core/sections.js";
 import type { Section } from "../types.js";
 import { iso, utcNow } from "../lib/time.js";
 
-export async function cmdRecover(args: { config: string; force?: boolean }): Promise<void> {
+export async function cmdRecover(args: { config?: string; force?: boolean }): Promise<void> {
   const config = loadConfig(args.config);
   const paths = await ensureInitialized(config, { autoInit: false });
   const runtime = await loadRuntime(paths);

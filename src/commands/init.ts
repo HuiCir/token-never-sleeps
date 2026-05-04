@@ -1,7 +1,7 @@
 import { cp, mkdir, readFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig } from "../lib/config.js";
+import { loadConfig, loadGlobalConfig } from "../lib/config.js";
 import { initState } from "../core/state.js";
 import { pathExists, writeJson, writeText } from "../lib/fs.js";
 import type { PermissionSettings, TnsConfig, WorkflowSettings } from "../types.js";
@@ -433,7 +433,16 @@ export async function cmdInit(args: {
       }
 
       const baseConfig = await defaultConfig(workspace, taskPath, args.runner || "auto");
-      const mergedConfig = mergeConfig(baseConfig, await templateConfig(templateName), workspace, taskPath, args.runner || "auto");
+      const globalConfig = loadGlobalConfig();
+      const template = await templateConfig(templateName);
+      const mergedConfig = Object.keys(globalConfig).length > 0
+        ? {
+            ...template,
+            workspace,
+            product_doc: taskPath,
+            tmux: template.tmux ?? baseConfig.tmux,
+          }
+        : mergeConfig(baseConfig, template, workspace, taskPath, args.runner || "auto");
 
       if (force || !(await pathExists(configPath))) {
         await writeJson(configPath, mergedConfig);
@@ -450,15 +459,12 @@ export async function cmdInit(args: {
         created,
         runner: config.tmux.enabled && tmuxAvailable() ? "tmux" : "direct",
         tmux_available: tmuxAvailable(),
-        next: [`tns status --config ${configPath}`, `tns start --config ${configPath}`],
+        next: [`cd ${workspace}`, "tns status", "tns start"],
       }, null, 2));
     });
     return;
   }
 
-  if (!args.config) {
-    throw new Error("init requires --workspace for a new workspace or --config for an existing config");
-  }
   const config = loadConfig(args.config);
   await withResourceLocks(config.workspace, ["workspace", "config", "state"], "tns init", async () => {
     await initState(config);

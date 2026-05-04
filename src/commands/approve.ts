@@ -5,7 +5,7 @@ import { grantApproval, revokeApproval } from "../core/approvals.js";
 import { withResourceLocks } from "../lib/lock.js";
 import { iso, utcNow } from "../lib/time.js";
 
-export async function cmdApprove(args: { config: string; tag: string; note?: string }): Promise<void> {
+export async function cmdApprove(args: { config?: string; tag: string; note?: string }): Promise<void> {
   const config = loadConfig(args.config);
   await withResourceLocks(config.workspace, ["workspace", "control", "state"], "tns approve", async () => {
     const paths = await ensureInitialized(config, { autoInit: true });
@@ -28,7 +28,7 @@ export async function cmdApprove(args: { config: string; tag: string; note?: str
   });
 }
 
-export async function cmdRevoke(args: { config: string; tag: string }): Promise<void> {
+export async function cmdRevoke(args: { config?: string; tag: string }): Promise<void> {
   const config = loadConfig(args.config);
   await withResourceLocks(config.workspace, ["workspace", "control", "state"], "tns revoke", async () => {
     const paths = await ensureInitialized(config, { autoInit: true });

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { basename, isAbsolute, resolve } from "node:path";
-import { commandBridgeSettings, executionSettings, externalSettings, explorationSettings, monitorSettings, outputSettings, policySettings, preflightSettings, programSettings, tmuxSettings, validatorSettings, workflowSettings } from "../lib/config.js";
+import { commandBridgeSettings, configForWrite, executionSettings, externalSettings, explorationSettings, monitorSettings, outputSettings, policySettings, preflightSettings, programSettings, tmuxSettings, validatorSettings, workflowSettings } from "../lib/config.js";
 import { pathExistsSync, readJson, writeJson, writeText } from "../lib/fs.js";
 import { parseSections } from "../core/sections.js";
 import { ensureInitialized, statePaths } from "../core/state.js";
@@ -595,7 +595,7 @@ async function synthesizeCompilerReview(config: TnsConfig, paths: ReturnType<typ
   return payload;
 }
 
-export async function cmdCompile(args: { config: string; synthesize?: boolean; apply?: boolean }): Promise<void> {
+export async function cmdCompile(args: { config?: string; synthesize?: boolean; apply?: boolean }): Promise<void> {
   const initialConfig = loadConfig(args.config);
   await withResourceLocks(initialConfig.workspace, ["workspace", "compile", "config", "state"], "tns compile", async () => {
     const paths = await ensureInitialized(initialConfig, { autoInit: false });
@@ -613,8 +613,9 @@ export async function cmdCompile(args: { config: string; synthesize?: boolean; a
 
     if (args.apply && compilerReview) {
       const mergedConfig = mergeCompilerPatch(activeConfig, compilerReview.patch);
-      await writeJson(activeConfig._config_path || args.config, mergedConfig);
-      activeConfig = loadConfig(activeConfig._config_path || args.config);
+      const configPath = activeConfig._config_path || args.config || "tns_config.json";
+      await writeJson(configPath, configForWrite(mergedConfig, configPath));
+      activeConfig = loadConfig(configPath);
       compiled = await buildCompiledProgram(activeConfig, paths);
       await writeJson(paths.compiled_program, compiled);
       await syncSectionStateFromTask(activeConfig.product_doc, paths, "compile apply synchronized task sections");

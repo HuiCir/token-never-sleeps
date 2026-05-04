@@ -8,40 +8,40 @@ Common commands:
   tns init --workspace /abs/path/to/project
       Create a runnable workspace from a blank or named template.
 
-  tns status --config /abs/path/to/project/tns_config.json
+  tns status
       Show mutable runner state, counts, freeze, approvals, artifacts, and tmux.
 
-  tns btw --config /abs/path/to/project/tns_config.json
+  tns btw
       Read a live, read-only snapshot during long runs without touching runner state.
 
-  tns doctor --config /abs/path/to/project/tns_config.json
+  tns doctor
       Run preflight and environment diagnostics before a long run.
 
-  tns trace --config /abs/path/to/project/tns_config.json
+  tns trace
       Read recent activity events and validator outcomes.
 
-  tns recover --config /abs/path/to/project/tns_config.json
+  tns recover
       Clear stale runtime/lock state and recover interrupted sections.
 
-  tns compile --config /abs/path/to/project/tns_config.json
+  tns compile
       Compile task.md and config into a deterministic orchestration program.
 
-  tns start --config /abs/path/to/project/tns_config.json
+  tns start
       Use managed tmux when configured and available; otherwise run directly.
 
-  tns run --config /abs/path/to/project/tns_config.json --once
+  tns run --once
       Run one loop directly. Good for manual stepping and debugging.
 
-  tns approve --config /abs/path/to/project/tns_config.json --tag restricted-step
+  tns approve --tag restricted-step
       Grant one named escalated permission tag after user review.
 
-  tns revoke --config /abs/path/to/project/tns_config.json --tag restricted-step
+  tns revoke --tag restricted-step
       Remove a previously granted escalated permission tag.
 
-  tns run-tmux --config /abs/path/to/project/tns_config.json
+  tns run-tmux
       Explicit tmux mode. Requires tmux.
 
-  tns skill install pdf --config /abs/path/to/project/tns_config.json --source /path/to/skillbase
+  tns skill install pdf --source /path/to/skillbase
       Bind a skill source, install a named skill into a runner injection profile, and persist it.
 
   tns skills --action doctor --source /path/to/skillbase
@@ -52,19 +52,20 @@ Typical flows:
        tns init --workspace /abs/path/to/project --template novel-writing
 
   2. Inspect before running:
-       tns status --config /abs/path/to/project/tns_config.json
+       cd /abs/path/to/project
+       tns status
 
   3. Manual loop:
-       tns run --config /abs/path/to/project/tns_config.json --once
+       tns run --once
 
   4. Long unattended loop:
-       tns start --config /abs/path/to/project/tns_config.json
+       tns start
 
   5. Read-only monitoring during long runs:
-       tns btw --config /abs/path/to/project/tns_config.json
+       tns btw
 
   6. Approve a gated stage:
-       tns approve --config /abs/path/to/project/tns_config.json --tag restricted-step
+       tns approve --tag restricted-step
 
 Help topics:
   tns help init
@@ -107,21 +108,22 @@ Notes:
   - init creates task.md, tns_config.json, and .tns state files.
   - template support files are copied into the workspace.
   - runner auto selects direct mode when tmux is unavailable.
+  - after cd into a workspace, --config is optional for normal commands.
 `,
   run: `
 TNS run modes
 
 Recommended:
-  tns start --config /abs/path/to/tns_config.json
+  tns start
 
 Portable direct mode:
-  tns run --config /abs/path/to/tns_config.json
+  tns run
 
 Managed tmux mode:
-  tns run-tmux --config /abs/path/to/tns_config.json
+  tns run-tmux
 
 Live snapshot without mutating state:
-  tns btw --config /abs/path/to/tns_config.json
+  tns btw
 
 Long-running agent guardrail:
   monitor.heartbeat_seconds updates runtime while Claude is still running.
@@ -129,13 +131,13 @@ Long-running agent guardrail:
 
 Common patterns:
   Manual single pass:
-    tns run --config /abs/path/to/tns_config.json --once
+    tns run --once
 
   Direct long loop:
-    tns run --config /abs/path/to/tns_config.json
+    tns run
 
   Managed long loop:
-    tns start --config /abs/path/to/tns_config.json
+    tns start
 
 Important:
   - run acquires named resource locks for workspace, runner, and state.
@@ -147,6 +149,21 @@ TNS config
 
 Required:
   workspace
+
+Resolution:
+  1. explicit --config /path/to/tns_config.json
+  2. nearest tns_config.json from the current directory upward
+  3. global ~/.tns/config.json
+
+Global config:
+  Use ~/.tns/config.json for shared defaults such as permissions, monitor,
+  execution, command_bridge, validators, skillbases, and injections.
+  Set TNS_GLOBAL_CONFIG=/path/to/config.json to override the global path.
+
+Local priority:
+  Workspace-local tns_config.json overrides global config. Keep task-local and
+  runtime identity fields local: workspace, product_doc, thread / threads,
+  program, tmux, and task-specific overrides.
 
 Defaults:
   product_doc defaults to workspace/task.md.
@@ -260,11 +277,11 @@ Inspect skill libraries without installing or modifying them:
   tns skills --action match --text "extract tables from a PDF report"
 
 Manage configured sources and installed skill bindings:
-  tns skill source-add --config /abs/path/to/tns_config.json --source /path/to/skillbase
-  tns skill source-list --config /abs/path/to/tns_config.json
-  tns skill install pdf --config /abs/path/to/tns_config.json
-  tns skill install pdf --config /abs/path/to/tns_config.json --source /path/to/skillbase
-  tns skill uninstall pdf --config /abs/path/to/tns_config.json
+  tns skill source-add --source /path/to/skillbase
+  tns skill source-list
+  tns skill install pdf
+  tns skill install pdf --source /path/to/skillbase
+  tns skill uninstall pdf
 
 Install behavior:
   - source-add persists skillbases.sources in tns_config.json.
@@ -311,9 +328,9 @@ Separation:
 TNS compile
 
 Compile the current task and config into a deterministic orchestration program:
-  tns compile --config /abs/path/to/tns_config.json
-  tns compile --config /abs/path/to/tns_config.json --synthesize
-  tns compile --config /abs/path/to/tns_config.json --synthesize --apply
+  tns compile
+  tns compile --synthesize
+  tns compile --synthesize --apply
 
 Output:
   .tns/compiled/program.json
@@ -376,22 +393,22 @@ Meaning:
   - policy decides whether failures freeze, block, mark needs_fix, or fail the run
 
 Recommended diagnostics:
-  tns doctor --config /abs/path/to/tns_config.json
-  tns trace --config /abs/path/to/tns_config.json
+  tns doctor
+  tns trace
 `,
   doctor: `
 TNS doctor and recover
 
 Diagnostics:
-  tns doctor --config /abs/path/to/tns_config.json
+  tns doctor
 
 Recovery:
-  tns recover --config /abs/path/to/tns_config.json
-  tns recover --config /abs/path/to/tns_config.json --force
+  tns recover
+  tns recover --force
 
 Trace:
-  tns trace --config /abs/path/to/tns_config.json
-  tns trace --config /abs/path/to/tns_config.json --section sec-002
+  tns trace
+  tns trace --section sec-002
 
 doctor runs:
   - config load
@@ -438,8 +455,8 @@ Guards:
   - workspace path audit still applies to files_touched
 
 Recommended start:
-  tns run --config /abs/path/to/tns_config.json --once
-  tns btw --config /abs/path/to/tns_config.json
+  tns run --once
+  tns btw
 
 Watch state:
   .tns/exploration.json
@@ -476,11 +493,11 @@ Runtime behavior:
   2. Safe tools in that profile are auto-approved through Claude allowedTools.
   3. If the profile requires approval and the tag is missing, TNS freezes and records a pending approval request.
   4. The user reviews the request and runs:
-       tns approve --config /abs/path/to/tns_config.json --tag restricted-step
+       tns approve --tag restricted-step
   5. The next run continues with that approval in place.
 
 Read-only inspection:
-  tns btw --config /abs/path/to/tns_config.json
+  tns btw
 
 Approval state is stored in:
   .tns/approvals.json
@@ -497,10 +514,10 @@ Operational notes:
 TNS status and monitoring
 
 Mutable status:
-  tns status --config /abs/path/to/tns_config.json
+  tns status
 
 Read-only live status:
-  tns btw --config /abs/path/to/tns_config.json
+  tns btw
 
 Use status when you want:
   - section counts
@@ -531,7 +548,7 @@ TNS tmux behavior
 tmux is optional. Use direct mode on Windows or any system where tmux is missing.
 
 Recommended:
-  tns start --config /abs/path/to/tns_config.json
+  tns start
 
 Status reports available=false and fallback=direct when tmux is not installed.
 
@@ -544,7 +561,7 @@ Runner notes:
 TNS btw
 
 Read-only snapshot for long-running work:
-  tns btw --config /abs/path/to/tns_config.json
+  tns btw
 
 Optional limits:
   --events 12
@@ -555,7 +572,7 @@ and does not rewrite freeze, tmux, or runtime state. It only reads current .tns
 files and prints the latest snapshot.
 
 Typical use:
-  tns btw --config /abs/path/to/tns_config.json --events 12 --reviews 5
+  tns btw --events 12 --reviews 5
 `,
 };
 

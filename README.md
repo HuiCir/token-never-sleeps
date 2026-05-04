@@ -32,6 +32,23 @@ npm install -g token-never-sleeps
 - `claude` CLI available in `PATH`
 - optional: `tmux` if you want managed runner mode
 
+## Config resolution
+
+Most commands do not need `--config` after you enter a workspace. TNS resolves
+configuration in this order:
+
+1. an explicit `--config /path/to/tns_config.json`
+2. the nearest `tns_config.json` found from the current directory upward
+3. the global config at `~/.tns/config.json`
+
+Global config is for shared system defaults such as permissions, monitor
+settings, execution classes, command bridges, validators, skill sources, and
+injection profiles. After `tns init --workspace ...`, the workspace-local
+`tns_config.json` takes priority for runtime identity and task-local settings
+such as `workspace`, `product_doc`, `thread` / `threads`, `program`, tmux, and
+task-specific overrides. Set `TNS_GLOBAL_CONFIG=/path/to/config.json` to test or
+use a different global config file.
+
 ## Quickstart
 
 Create a blank workspace:
@@ -50,18 +67,18 @@ Then run the real orchestration loop:
 
 ```bash
 cd ./my-task
-tns compile --config ./tns_config.json
-tns status --config ./tns_config.json
-tns doctor --config ./tns_config.json
-tns run --config ./tns_config.json --once
+tns compile
+tns status
+tns doctor
+tns run --once
 ```
 
 For long-running work, use the managed runner and inspect it without mutating state:
 
 ```bash
-tns start --config ./tns_config.json
-tns btw --config ./tns_config.json
-tns trace --config ./tns_config.json
+tns start
+tns btw
+tns trace
 ```
 
 ## Deterministic compilation
@@ -69,9 +86,9 @@ tns trace --config ./tns_config.json
 TNS can compile `task.md` and `tns_config.json` into a deterministic orchestration program:
 
 ```bash
-tns compile --config ./tns_config.json
-tns compile --config ./tns_config.json --synthesize
-tns compile --config ./tns_config.json --synthesize --apply
+tns compile
+tns compile --synthesize
+tns compile --synthesize --apply
 ```
 
 This writes:
@@ -145,9 +162,9 @@ Compile materializes that program and writes the runner-visible contract to
 `.tns/compiled/program.json`:
 
 ```bash
-tns compile --config ./tns_config.json
-tns status --config ./tns_config.json
-tns run --config ./tns_config.json --once
+tns compile
+tns status
+tns run --once
 ```
 
 ## Bounded Parallel Planning
@@ -180,7 +197,7 @@ The current planning layer keeps heavy Claude parallel plans bounded to two thre
 - `parallel.workspace`
 - `parallel.merge_policy`
 
-Use `tns trace --config ./tns_config.json` to inspect `parallel_batch_start`,
+Use `tns trace` to inspect `parallel_batch_start`,
 `agent_start`, `agent_end`, and `parallel_batch_end` events from the real run.
 
 ## Skillbases
@@ -215,15 +232,15 @@ tns skills --action match --text "extract tables from a PDF report" --source /ab
 Persist a skill source and install a skill into the runner config:
 
 ```bash
-tns skill source-add --config ./tns_config.json --source /abs/path/to/skillbase
-tns skill source-list --config ./tns_config.json
-tns skill install pdf --config ./tns_config.json
+tns skill source-add --source /abs/path/to/skillbase
+tns skill source-list
+tns skill install pdf
 ```
 
 Install can bind a source and skill in one command:
 
 ```bash
-tns skill install pdf --config ./tns_config.json --source /abs/path/to/skillbase
+tns skill install pdf --source /abs/path/to/skillbase
 ```
 
 By default, `install` writes the resolved skill into
@@ -274,10 +291,10 @@ and stop for explicit user approval when a section needs stronger permissions.
 Typical flow:
 
 ```bash
-tns run --config ./tns_config.json --once
-tns btw --config ./tns_config.json
-tns approve --config ./tns_config.json --tag restricted-step --note "approved by operator"
-tns run --config ./tns_config.json --once
+tns run --once
+tns btw
+tns approve --tag restricted-step --note "approved by operator"
+tns run --once
 ```
 
 Key points:
@@ -338,7 +355,7 @@ Default monitor settings:
 }
 ```
 
-Use `tns btw --config ./tns_config.json` to inspect:
+Use `tns btw` to inspect:
 
 - current runner heartbeat
 - active section and step

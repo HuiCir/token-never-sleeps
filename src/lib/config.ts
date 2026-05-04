@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { expandUser } from "./fs.js";
+import { dirname, resolve } from "node:path";
+import { expandUser, pathExistsSync } from "./fs.js";
 import type {
   CommandBridgeSettings,
   ExternalDependencySettings,
@@ -23,10 +24,148 @@ import type {
   WorkflowSettings,
 } from "../types.js";
 
-export function loadConfig(path: string): TnsConfig {
+export const GLOBAL_CONFIG_PATH = "~/.tns/config.json";
+
+type ConfigObject = Record<string, unknown>;
+
+function isPlainObject(value: unknown): value is ConfigObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function deepMergeConfig<T extends ConfigObject>(base: T, override: ConfigObject): T {
+  const output: ConfigObject = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    const prior = output[key];
+    if (isPlainObject(prior) && isPlainObject(value)) {
+      output[key] = deepMergeConfig(prior, value);
+    } else {
+      output[key] = value;
+    }
+  }
+  return output as T;
+}
+
+function readConfigObject(path: string): ConfigObject {
   const resolved = expandUser(path);
   const content = readFileSync(resolved, "utf-8");
-  const config = JSON.parse(content) as TnsConfig;
+  return JSON.parse(content) as ConfigObject;
+}
+
+function deepEqualConfig(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function stripInternalConfig(config: Record<string, unknown>): ConfigObject {
+  const clone = JSON.parse(JSON.stringify(config)) as ConfigObject;
+  delete clone._config_path;
+  delete clone._program_from_compiled;
+  return clone;
+}
+
+function pruneInheritedConfig(value: unknown, inherited: unknown): unknown {
+  if (deepEqualConfig(value, inherited)) {
+    return undefined;
+  }
+  if (!isPlainObject(value) || !isPlainObject(inherited)) {
+    return value;
+  }
+  const output: ConfigObject = {};
+  for (const [key, child] of Object.entries(value)) {
+    const pruned = pruneInheritedConfig(child, inherited[key]);
+    if (pruned !== undefined) {
+      output[key] = pruned;
+    }
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+}
+
+function arrayStartsWithPrefix(value: unknown[], prefix: unknown[]): boolean {
+  if (prefix.length > value.length) {
+    return false;
+  }
+  return prefix.every((item, index) => deepEqualConfig(item, value[index]));
+}
+
+function compactInheritedSkillbaseSources(clean: ConfigObject, global: ConfigObject): ConfigObject {
+  const localSkillbases = clean.skillbases;
+  const globalSkillbases = global.skillbases;
+  if (!isPlainObject(localSkillbases) || !isPlainObject(globalSkillbases)) {
+    return clean;
+  }
+  const localSources = localSkillbases.sources;
+  const globalSources = globalSkillbases.sources;
+  if (!Array.isArray(localSources) || !Array.isArray(globalSources) || !arrayStartsWithPrefix(localSources, globalSources)) {
+    return clean;
+  }
+  const next = {
+    ...clean,
+    skillbases: {
+      ...localSkillbases,
+      sources: localSources.slice(globalSources.length),
+    },
+  };
+  return next;
+}
+
+function findUpConfig(startDir = process.cwd()): string | null {
+  let current = resolve(startDir);
+  while (true) {
+    const candidate = resolve(current, "tns_config.json");
+    if (pathExistsSync(candidate)) {
+      return candidate;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+export function globalConfigPath(): string {
+  return process.env.TNS_GLOBAL_CONFIG || GLOBAL_CONFIG_PATH;
+}
+
+export function resolveConfigPath(path?: string): string {
+  if (path) {
+    return expandUser(path);
+  }
+  const local = findUpConfig();
+  if (local) {
+    return local;
+  }
+  const global = expandUser(globalConfigPath());
+  if (pathExistsSync(global)) {
+    return global;
+  }
+  throw new Error("config not found: pass --config, run inside a TNS workspace, or create ~/.tns/config.json");
+}
+
+export function loadGlobalConfig(): Partial<TnsConfig> {
+  const path = expandUser(globalConfigPath());
+  if (!pathExistsSync(path)) {
+    return {};
+  }
+  return readConfigObject(path) as Partial<TnsConfig>;
+}
+
+export function loadConfig(path?: string): TnsConfig {
+  const resolved = resolveConfigPath(path);
+  const globalConfig = loadGlobalConfig() as ConfigObject;
+  const localConfig = readConfigObject(resolved);
+  const config = deepMergeConfig(globalConfig, localConfig) as unknown as TnsConfig;
+  const globalSkillbases = globalConfig.skillbases;
+  const localSkillbases = localConfig.skillbases;
+  if (isPlainObject(globalSkillbases) && isPlainObject(localSkillbases)) {
+    const globalSources = globalSkillbases.sources;
+    const localSources = localSkillbases.sources;
+    if (Array.isArray(globalSources) && Array.isArray(localSources)) {
+      config.skillbases = {
+        ...(config.skillbases ?? {}),
+        sources: [...globalSources, ...localSources] as NonNullable<TnsConfig["skillbases"]>["sources"],
+      };
+    }
+  }
 
   const required = ["workspace"];
   const missing = required.filter((key) => !(key in config));
@@ -41,6 +180,27 @@ export function loadConfig(path: string): TnsConfig {
 
   (config as TnsConfig & { _config_path: string })._config_path = resolved;
   return config;
+}
+
+export function configForWrite(config: TnsConfig | Record<string, unknown>, path?: string): Record<string, unknown> {
+  let clean = stripInternalConfig(config as Record<string, unknown>);
+  const configPath = path ?? (config as TnsConfig)._config_path;
+  const global = loadGlobalConfig() as ConfigObject;
+  if (!configPath || Object.keys(global).length === 0) {
+    return clean;
+  }
+  if (resolve(expandUser(configPath)) === resolve(expandUser(globalConfigPath()))) {
+    return clean;
+  }
+  clean = compactInheritedSkillbaseSources(clean, global);
+  const pruned = (pruneInheritedConfig(clean, global) ?? {}) as ConfigObject;
+  if ("workspace" in clean) {
+    pruned.workspace = clean.workspace;
+  }
+  if ("product_doc" in clean) {
+    pruned.product_doc = clean.product_doc;
+  }
+  return pruned;
 }
 
 export function tmuxSettings(config: TnsConfig): TmuxSettings {

@@ -14,7 +14,7 @@ import { loadRuntime } from "../core/runtime.js";
 import { loadApprovals } from "../core/approvals.js";
 import type { ExplorationState } from "../types.js";
 
-export async function cmdStatus(args: { config: string }): Promise<void> {
+export async function cmdStatus(args: { config?: string }): Promise<void> {
   const config = loadConfig(args.config);
   const paths = await ensureInitialized(config, { autoInit: false });
   const manifest = await loadManifest(paths);

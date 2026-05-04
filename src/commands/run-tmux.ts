@@ -27,7 +27,7 @@ async function windowExists(tmux: string, baseArgs: string[], sessionName: strin
   return (listed.stdout || "").split("\n").some((line) => line.trim() === windowName);
 }
 
-export async function cmdRunTmx(args: { config: string; poll_seconds?: number; pollSeconds?: number; restart?: boolean; once?: boolean }): Promise<void> {
+export async function cmdRunTmx(args: { config?: string; poll_seconds?: number; pollSeconds?: number; restart?: boolean; once?: boolean }): Promise<void> {
   const config = loadConfig(args.config);
   await withResourceLocks(config.workspace, ["workspace", "runner", "tmux", "state"], "tns run-tmux", async () => {
     const paths = await ensureInitialized(config, { autoInit: true });
@@ -59,13 +59,13 @@ export async function cmdRunTmx(args: { config: string; poll_seconds?: number; p
     const sessionName = settings.session_name || `tns-${paths.workspace.split("/").pop()}`;
     const bootstrapWindowName = settings.window_name || "tns";
     const runnerWindowName = settings.runner_window_name || "tns-runner";
-    const pollSeconds = Number(args.poll_seconds ?? args.pollSeconds ?? 60);
+    const pollSeconds = Math.max(1, Number(args.poll_seconds ?? args.pollSeconds ?? config.idle_interval_seconds ?? 60));
     const runnerCommand = [
       process.execPath,
       cliEntryPath(),
       "run",
       "--config",
-      resolve(args.config),
+      resolve(config._config_path || args.config || "tns_config.json"),
       "--poll-seconds",
       String(pollSeconds),
       ...(args.once ? ["--once"] : []),

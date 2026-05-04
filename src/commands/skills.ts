@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { buildSkillbaseIndex, matchSkillsFromIndex, resolveSkillFromIndex, skillbaseSettings } from "../lib/skillbase.js";
-import { loadConfig } from "../lib/config.js";
+import { configForWrite, loadConfig } from "../lib/config.js";
 import { expandUser, writeJson } from "../lib/fs.js";
 import type { ExternalSkillSpec, InjectionProfile, SkillbaseSourceSettings, TnsConfig } from "../types.js";
 
@@ -54,10 +54,17 @@ function emptyCliConfig(): TnsConfig {
 }
 
 function loadSkillConfig(args: SkillArgs, options?: { bindCliSources?: boolean }): TnsConfig {
-  const config = args.config
-    ? loadConfig(args.config)
-    : emptyCliConfig();
-  if (!args.config && args.source && args.source.length > 0) {
+  let config: TnsConfig;
+  if (args.config) {
+    config = loadConfig(args.config);
+  } else {
+    try {
+      config = loadConfig();
+    } catch {
+      config = emptyCliConfig();
+    }
+  }
+  if (!config._config_path && args.source && args.source.length > 0) {
     config.skillbases = { use_default_sources: false, sources: [] };
   }
   if (options?.bindCliSources ?? true) {
@@ -95,7 +102,7 @@ async function saveConfig(config: TnsConfig, args: SkillArgs): Promise<string> {
   if (!configPath) {
     throw new Error("this skill action requires --config so TNS can persist the binding");
   }
-  await writeJson(configPath, serializableConfig(config));
+  await writeJson(configPath, configForWrite(serializableConfig(config), configPath));
   return configPath;
 }
 
@@ -331,7 +338,7 @@ export async function cmdSkill(args: SkillArgs): Promise<void> {
   const config = loadSkillConfig(args, { bindCliSources: !mutating });
 
   if (action === "source-add") {
-    if (!args.config) throw new Error("tns skill source-add requires --config");
+    if (!config._config_path) throw new Error("tns skill source-add requires a resolved workspace config");
     const paths = args.source && args.source.length > 0 ? args.source : (args.path ? [args.path] : []);
     if (paths.length === 0) throw new Error("tns skill source-add requires --source or --path");
     if (args.disable_default_sources ?? args.disableDefaultSources) {
@@ -347,7 +354,7 @@ export async function cmdSkill(args: SkillArgs): Promise<void> {
   }
 
   if (action === "source-remove") {
-    if (!args.config) throw new Error("tns skill source-remove requires --config");
+    if (!config._config_path) throw new Error("tns skill source-remove requires a resolved workspace config");
     const key = args.name ?? args.id ?? args.path;
     if (!key) throw new Error("tns skill source-remove requires a source id or path");
     const result = removeSource(config, key);
@@ -360,7 +367,7 @@ export async function cmdSkill(args: SkillArgs): Promise<void> {
   }
 
   if (action === "install") {
-    if (!args.config) throw new Error("tns skill install requires --config");
+    if (!config._config_path) throw new Error("tns skill install requires a resolved workspace config");
     if (!args.name) throw new Error("tns skill install requires a skill name");
     const boundSources = (args.source ?? []).map((path, index) => addSource(config, sourceSpec(args, path, index)));
     const index = await buildSkillbaseIndex(config);
@@ -390,7 +397,7 @@ export async function cmdSkill(args: SkillArgs): Promise<void> {
   }
 
   if (action === "uninstall") {
-    if (!args.config) throw new Error("tns skill uninstall requires --config");
+    if (!config._config_path) throw new Error("tns skill uninstall requires a resolved workspace config");
     if (!args.name) throw new Error("tns skill uninstall requires a skill name");
     const profile = profileNameFor(args);
     const uninstalled = uninstallSkillFromProfile(config, profile, args.name);

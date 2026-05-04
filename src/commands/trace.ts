@@ -3,7 +3,7 @@ import { loadConfig } from "../lib/config.js";
 import { ensureInitialized } from "../core/state.js";
 import type { ActivityEvent } from "../types.js";
 
-export async function cmdTrace(args: { config: string; section?: string; limit?: number }): Promise<void> {
+export async function cmdTrace(args: { config?: string; section?: string; limit?: number }): Promise<void> {
   const config = loadConfig(args.config);
   const paths = await ensureInitialized(config, { autoInit: false });
   const limit = Math.max(1, Number(args.limit ?? 30));
