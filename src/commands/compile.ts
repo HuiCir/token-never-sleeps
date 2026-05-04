@@ -79,6 +79,13 @@ function normalizeExternalSkillSpec(input: unknown): ExternalSkillSpec | null {
         : typeof record.description === "string"
           ? record.description
           : undefined,
+    source_id: typeof record.source_id === "string" ? record.source_id : undefined,
+    source_kind: record.source_kind === "skillbase" || record.source_kind === "plugin" || record.source_kind === "skills_dir" ? record.source_kind : undefined,
+    source_path: typeof record.source_path === "string" ? record.source_path : undefined,
+    path: typeof record.path === "string" ? record.path : undefined,
+    content_hash: typeof record.content_hash === "string" ? record.content_hash : undefined,
+    installed_at: typeof record.installed_at === "string" ? record.installed_at : undefined,
+    registry_package: typeof record.registry_package === "string" ? record.registry_package : undefined,
   };
 }
 

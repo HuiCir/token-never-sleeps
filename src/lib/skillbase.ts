@@ -59,11 +59,14 @@ interface NormalizedSource {
   priority: number;
 }
 
-function defaultSourcePaths(): SkillbaseSourceSettings[] {
+function defaultSourcePaths(config: TnsConfig): SkillbaseSourceSettings[] {
   return [
+    { id: "workspace-claude-skills", path: config.workspace ? `${config.workspace}/.claude/skills` : "./.claude/skills", kind: "skills_dir", priority: 30 },
     { id: "agents-skills", path: "~/.agents/skills", kind: "skills_dir", priority: 100 },
     { id: "codex-user-skills", path: "~/.codex/skills", kind: "skills_dir", priority: 110 },
+    { id: "claude-user-skills", path: "~/.claude/skills", kind: "skills_dir", priority: 120 },
     { id: "codex-plugin-library", path: "~/.codex/.tmp/plugins", kind: "plugin", priority: 200 },
+    { id: "claude-plugin-library", path: "~/.claude/plugins", kind: "plugin", priority: 210 },
   ];
 }
 
@@ -79,7 +82,7 @@ export function skillbaseSettings(config: TnsConfig): Required<SkillbaseSettings
     use_default_sources: useDefault,
     sources: [
       ...envSources,
-      ...(useDefault ? defaultSourcePaths() : []),
+      ...(useDefault ? defaultSourcePaths(config) : []),
       ...(cfg.sources ?? []),
     ],
     selection: skillbaseSelectionSettings(config),
@@ -115,10 +118,31 @@ function primaryNameFromDirectory(path: string): string {
 }
 
 function parseFrontmatterValue(frontmatter: string, key: string): string | null {
-  const pattern = new RegExp(`^${key}:\\s*(.*)$`, "m");
-  const match = frontmatter.match(pattern);
-  if (!match) return null;
-  return match[1].trim().replace(/^['"]|['"]$/g, "");
+  const lines = frontmatter.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const match = lines[index].match(new RegExp(`^${key}:\\s*(.*)$`));
+    if (!match) {
+      continue;
+    }
+    const value = match[1].trim();
+    if (value === ">" || value === "|") {
+      const block: string[] = [];
+      for (let cursor = index + 1; cursor < lines.length; cursor++) {
+        const line = lines[cursor];
+        if (line.trim().length === 0) {
+          block.push("");
+          continue;
+        }
+        if (!/^\s+/.test(line)) {
+          break;
+        }
+        block.push(line.trim());
+      }
+      return value === ">" ? block.join(" ").trim() : block.join("\n").trim();
+    }
+    return value.replace(/^['"]|['"]$/g, "");
+  }
+  return null;
 }
 
 function parseSkillMarkdown(content: string, fallbackName: string): ParsedSkillMarkdown {
@@ -163,6 +187,7 @@ async function readSkillFile(skillFile: string, source: NormalizedSource, source
 
 async function scanForSkillFiles(root: string, maxDepth: number): Promise<string[]> {
   const results: string[] = [];
+  const ignored = new Set(["node_modules", ".git", ".tns", "dist", "build"]);
   async function walk(current: string, depth: number): Promise<void> {
     if (depth > maxDepth) return;
     let entries;
@@ -176,7 +201,7 @@ async function scanForSkillFiles(root: string, maxDepth: number): Promise<string
       return;
     }
     await Promise.all(entries
-      .filter((entry) => entry.isDirectory() && entry.name !== "node_modules" && !entry.name.startsWith("."))
+      .filter((entry) => entry.isDirectory() && !ignored.has(entry.name))
       .map((entry) => walk(join(current, entry.name), depth + 1)));
   }
   await walk(root, 0);
@@ -188,7 +213,13 @@ async function sourceKind(path: string, requested: NormalizedSource["kind"]): Pr
   if (await pathExists(join(path, "index.json")) && await pathExists(join(path, "skills"))) {
     return "skillbase";
   }
-  if (await pathExists(join(path, "plugins")) || await pathExists(join(path, ".agents", "skills"))) {
+  if (
+    await pathExists(join(path, "plugins")) ||
+    await pathExists(join(path, "marketplaces")) ||
+    await pathExists(join(path, ".agents", "skills")) ||
+    await pathExists(join(path, ".claude-plugin")) ||
+    await pathExists(join(path, ".cursor-plugin"))
+  ) {
     return "plugin";
   }
   return "skills_dir";
@@ -235,7 +266,8 @@ export async function buildSkillbaseIndex(config: TnsConfig): Promise<SkillbaseI
     const key = entry.name;
     byName[key] = [...(byName[key] ?? []), entry];
   }
-  const conflicts = Object.fromEntries(Object.entries(byName).filter(([, items]) => items.length > 1));
+  const conflicts = Object.fromEntries(Object.entries(byName)
+    .filter(([, items]) => new Set(items.map((item) => item.content_hash)).size > 1));
   return {
     generated_at: new Date().toISOString(),
     sources: scanned.map((item) => item.source),

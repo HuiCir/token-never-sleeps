@@ -56,7 +56,7 @@ async function main() {
     .command("skill [action] [name]", "Manage configured skill sources and installed skill bindings", (y) =>
       y.positional("action", {
         type: "string",
-        choices: ["doctor", "list", "resolve", "match", "source-list", "source-add", "source-remove", "install", "uninstall"],
+        choices: ["doctor", "list", "resolve", "match", "source-list", "source-add", "source-remove", "install", "uninstall", "sync-check", "registry-install", "registry-update", "registry-sync"],
         default: "doctor",
       })
         .positional("name", { type: "string" })
@@ -71,6 +71,15 @@ async function main() {
         .option("text", { type: "string" })
         .option("file", { type: "string" })
         .option("limit", { type: "number" })
+        .option("package", { type: "string" })
+        .option("skill", { type: "array" })
+        .option("agent", { type: "array" })
+        .option("global", { type: "boolean", default: false })
+        .option("project", { type: "boolean", default: false })
+        .option("yes", { type: "boolean", default: true })
+        .option("copy", { type: "boolean", default: false })
+        .option("all", { type: "boolean", default: false })
+        .option("bind", { type: "boolean", default: true })
         .option("disable-default-sources", { type: "boolean", default: false })
         .option("compact", { type: "boolean", default: false })
     )
@@ -156,7 +165,7 @@ async function main() {
       await cmdSkills(args as unknown as { config?: string; action?: string; name?: string; source?: string[]; text?: string; file?: string; limit?: number; compact?: boolean });
       break;
     case "skill":
-      await cmdSkill(args as unknown as { config?: string; action?: string; name?: string; source?: string[]; path?: string; id?: string; kind?: "auto" | "skillbase" | "plugin" | "skills_dir"; priority?: number; profile?: string; mode?: "executor" | "verifier" | "compile"; text?: string; file?: string; limit?: number; disable_default_sources?: boolean; disableDefaultSources?: boolean; compact?: boolean });
+      await cmdSkill(args as unknown as { config?: string; action?: string; name?: string; source?: string[]; path?: string; id?: string; kind?: "auto" | "skillbase" | "plugin" | "skills_dir"; priority?: number; profile?: string; mode?: "executor" | "verifier" | "compile"; text?: string; file?: string; limit?: number; package?: string; skill?: string[]; agent?: string[]; global?: boolean; project?: boolean; yes?: boolean; copy?: boolean; all?: boolean; bind?: boolean; disable_default_sources?: boolean; disableDefaultSources?: boolean; compact?: boolean });
       break;
     case "doctor":
       await cmdDoctor(args as unknown as { config?: string });

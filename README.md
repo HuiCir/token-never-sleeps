@@ -235,6 +235,7 @@ Persist a skill source and install a skill into the runner config:
 tns skill source-add --source /abs/path/to/skillbase
 tns skill source-list
 tns skill install pdf
+tns skill sync-check
 ```
 
 Install can bind a source and skill in one command:
@@ -244,9 +245,30 @@ tns skill install pdf --source /abs/path/to/skillbase
 ```
 
 By default, `install` writes the resolved skill into
-`injections.profiles.executor_task.skills` and records it in `externals.skills`.
+`injections.profiles.executor_task.skills` and records source path plus
+`content_hash` in `externals.skills`. `tns skill sync-check` compares that
+recorded hash with the currently resolved local skill so existing installs can
+be checked for drift.
 Use `--mode verifier` to install into `verifier_audit`, or `--profile NAME` to
 target a custom injection profile.
+
+Install from skills.sh and bind the installed skill into the current TNS
+profile:
+
+```bash
+tns skill registry-install vercel-labs/agent-skills --skill web-design-guidelines --agent claude-code
+tns skill registry-update --project
+tns skill registry-sync --agent claude-code
+```
+
+Default local sources include workspace `.claude/skills`, `~/.agents/skills`,
+`~/.codex/skills`, `~/.claude/skills`, `~/.codex/.tmp/plugins`, and
+`~/.claude/plugins`. You can add multiple explicit local sources for different
+agent ecosystems, for example:
+
+```bash
+tns skills --action doctor --source /root/.claude/plugins --source /root/codex/skillbase
+```
 
 Skill injection is stage-local:
 

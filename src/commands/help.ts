@@ -281,23 +281,32 @@ Manage configured sources and installed skill bindings:
   tns skill source-list
   tns skill install pdf
   tns skill install pdf --source /path/to/skillbase
+  tns skill sync-check
   tns skill uninstall pdf
+
+Install from skills.sh and bind into the current TNS profile:
+  tns skill registry-install vercel-labs/agent-skills --skill web-design-guidelines --agent claude-code
+  tns skill registry-update --project
+  tns skill registry-sync --agent claude-code
 
 Install behavior:
   - source-add persists skillbases.sources in tns_config.json.
   - install resolves the named skill from configured/default/CLI sources.
   - install writes the skill into injections.profiles.executor_task.skills by default.
   - use --mode verifier to install into verifier_audit, or --profile NAME for an explicit profile.
-  - install also records the skill in externals.skills for compile-time inventory.
+  - install records source path and content_hash in externals.skills for sync-check.
+  - sync-check compares the recorded content_hash with the currently resolved skill.
 
 With explicit sources:
-  tns skills --action doctor --source /root/codex/skillbase --source /root/.codex/.tmp/plugins
+  tns skills --action doctor --source /root/.claude/plugins --source /root/codex/skillbase
   tns skills --action resolve --name pdf --source /path/to/skillbase
 
 Config:
   skillbases.use_default_sources defaults to true.
-  skillbases.sources accepts user plugin libraries, extracted skillbases, or
-  direct skills directories.
+  Defaults include workspace .claude/skills, ~/.agents/skills, ~/.codex/skills,
+  ~/.claude/skills, ~/.codex/.tmp/plugins, and ~/.claude/plugins.
+  skillbases.sources accepts multiple user plugin libraries, extracted
+  skillbases, or direct skills directories.
 
 Supported source kinds:
   skillbase   A directory with skills/ and optional index.json.

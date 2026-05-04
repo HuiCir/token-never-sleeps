@@ -1,11 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { buildSkillbaseIndex, matchSkillsFromIndex, resolveSkillFromIndex, skillbaseSettings } from "../lib/skillbase.js";
+import { execa } from "execa";
+import { buildSkillbaseIndex, matchSkillsFromIndex, resolveSkillFromIndex, skillbaseSettings, type SkillbaseEntry } from "../lib/skillbase.js";
 import { configForWrite, loadConfig } from "../lib/config.js";
 import { expandUser, writeJson } from "../lib/fs.js";
 import type { ExternalSkillSpec, InjectionProfile, SkillbaseSourceSettings, TnsConfig } from "../types.js";
 
-type SkillAction = "doctor" | "list" | "resolve" | "match" | "source-list" | "source-add" | "source-remove" | "install" | "uninstall";
+type SkillAction = "doctor" | "list" | "resolve" | "match" | "source-list" | "source-add" | "source-remove" | "install" | "uninstall" | "sync-check" | "registry-install" | "registry-update" | "registry-sync";
 type SourceKind = "auto" | "skillbase" | "plugin" | "skills_dir";
 type SkillMode = "executor" | "verifier" | "compile";
 
@@ -23,6 +24,15 @@ interface SkillArgs {
   text?: string;
   file?: string;
   limit?: number;
+  package?: string;
+  skill?: string[];
+  agent?: string[];
+  global?: boolean;
+  project?: boolean;
+  yes?: boolean;
+  copy?: boolean;
+  all?: boolean;
+  bind?: boolean;
   compact?: boolean;
   disable_default_sources?: boolean;
   disableDefaultSources?: boolean;
@@ -214,19 +224,33 @@ function uninstallSkillFromProfile(config: TnsConfig, profileName: string, skill
   return next.length !== previous.length;
 }
 
-function addExternalSkill(config: TnsConfig, skillName: string, purpose: string): boolean {
+function addExternalSkill(config: TnsConfig, entry: SkillbaseEntry, purpose: string, registryPackage?: string): boolean {
   config.externals = {
     tools: config.externals?.tools ?? [],
     skills: config.externals?.skills ?? [],
     mcp: config.externals?.mcp ?? [],
   };
-  const existing = config.externals.skills?.find((item) => item.name === skillName);
+  const installedAt = new Date().toISOString();
+  const spec: ExternalSkillSpec = {
+    name: entry.name,
+    required: true,
+    purpose,
+    source_id: entry.source_id,
+    source_kind: entry.source_kind,
+    source_path: entry.source_path,
+    path: entry.path,
+    content_hash: entry.content_hash,
+    installed_at: installedAt,
+    registry_package: registryPackage,
+  };
+  const existing = config.externals.skills?.find((item) => item.name === entry.name);
   if (existing) {
+    Object.assign(existing, spec, { installed_at: existing.installed_at ?? installedAt });
     return false;
   }
   config.externals.skills = [
     ...(config.externals.skills ?? []),
-    { name: skillName, required: true, purpose } satisfies ExternalSkillSpec,
+    spec,
   ];
   return true;
 }
@@ -248,6 +272,122 @@ function installedSkillSummary(config: TnsConfig): Record<string, string[]> {
   return Object.fromEntries(Object.entries(profiles)
     .map(([name, profile]) => [name, Array.from(new Set(profile.skills ?? [])).sort()])
     .filter(([, skills]) => skills.length > 0));
+}
+
+function stringList(values: string[] | undefined): string[] {
+  return (values ?? []).map(String).filter(Boolean);
+}
+
+function stripAnsi(input: string): string {
+  return input.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function installedSkillSpecs(config: TnsConfig): ExternalSkillSpec[] {
+  const byName = new Map<string, ExternalSkillSpec>();
+  for (const skill of config.externals?.skills ?? []) {
+    byName.set(skill.name, skill);
+  }
+  for (const skills of Object.values(installedSkillSummary(config))) {
+    for (const name of skills) {
+      if (name.startsWith("tns-")) {
+        continue;
+      }
+      if (!byName.has(name)) {
+        byName.set(name, { name, required: true, purpose: "installed in injection profile without recorded source metadata" });
+      }
+    }
+  }
+  return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function runSkillsCli(cliArgs: string[], cwd = process.cwd()): Promise<{ command: string[]; stdout: string; stderr: string }> {
+  const command = ["npx", "--yes", "skills", ...cliArgs];
+  const result = await execa(command[0], command.slice(1), {
+    cwd,
+    reject: false,
+    all: false,
+    env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`skills.sh command failed (${result.exitCode}): ${command.join(" ")}\n${result.stderr || result.stdout}`);
+  }
+  return { command, stdout: stripAnsi(result.stdout), stderr: stripAnsi(result.stderr) };
+}
+
+async function printSyncCheck(config: TnsConfig, args: SkillArgs): Promise<void> {
+  const index = await buildSkillbaseIndex(config);
+  const requested = args.name ? new Set([args.name]) : null;
+  const installed = installedSkillSpecs(config).filter((item) => !requested || requested.has(item.name));
+  const checks = installed.map((spec) => {
+    const resolved = resolveSkillFromIndex(index, spec.name);
+    const current = resolved.selected ?? null;
+    const hashStatus = !current
+      ? "missing"
+      : !spec.content_hash
+        ? "untracked"
+        : spec.content_hash === current.content_hash
+          ? "in_sync"
+          : "changed";
+    return {
+      name: spec.name,
+      status: hashStatus,
+      installed_hash: spec.content_hash ?? null,
+      current_hash: current?.content_hash ?? null,
+      installed_source_id: spec.source_id ?? null,
+      current_source_id: current?.source_id ?? null,
+      installed_path: spec.path ?? null,
+      current_path: current?.path ?? null,
+      candidates: resolved.candidates.map((entry) => ({
+        source_id: entry.source_id,
+        path: entry.path,
+        content_hash: entry.content_hash,
+        priority: entry.priority,
+      })),
+    };
+  });
+  const summary = checks.reduce<Record<string, number>>((acc, item) => {
+    acc[item.status] = (acc[item.status] ?? 0) + 1;
+    return acc;
+  }, {});
+  console.log(JSON.stringify({
+    generated_at: index.generated_at,
+    installed: installed.length,
+    summary,
+    checks,
+  }, null, compact(args)));
+}
+
+async function bindResolvedSkills(config: TnsConfig, args: SkillArgs, names: string[], registryPackage?: string): Promise<{ bound: unknown[]; config?: string }> {
+  if (names.length === 0 || args.bind === false) {
+    return { bound: [] };
+  }
+  if (!config._config_path) {
+    return { bound: names.map((name) => ({ name, bound: false, reason: "no resolved workspace config" })) };
+  }
+  const index = await buildSkillbaseIndex(config);
+  const profile = profileNameFor(args);
+  const bound = names.map((name) => {
+    const resolved = resolveSkillFromIndex(index, name);
+    if (!resolved.found || !resolved.selected) {
+      return { name, bound: false, reason: "skill not found after registry operation" };
+    }
+    const installed = installSkillIntoProfile(config, profile, resolved.selected.name);
+    const declared = addExternalSkill(config, resolved.selected, `installed from ${resolved.selected.source_id}`, registryPackage);
+    return {
+      name,
+      bound: true,
+      installed,
+      declared_external: declared,
+      selected: {
+        name: resolved.selected.name,
+        source_id: resolved.selected.source_id,
+        path: resolved.selected.path,
+        content_hash: resolved.selected.content_hash,
+      },
+    };
+  });
+  const configPath = await saveConfig(config, args);
+  return { bound, config: configPath };
 }
 
 async function printReadonlySkillAction(config: TnsConfig, args: SkillArgs, action: SkillAction): Promise<void> {
@@ -334,7 +474,7 @@ async function printReadonlySkillAction(config: TnsConfig, args: SkillArgs, acti
 
 export async function cmdSkill(args: SkillArgs): Promise<void> {
   const action = (args.action ?? "doctor") as SkillAction;
-  const mutating = ["install", "uninstall", "source-add", "source-remove"].includes(action);
+  const mutating = ["install", "uninstall", "source-add", "source-remove", "registry-install", "registry-update", "registry-sync"].includes(action);
   const config = loadSkillConfig(args, { bindCliSources: !mutating });
 
   if (action === "source-add") {
@@ -377,7 +517,7 @@ export async function cmdSkill(args: SkillArgs): Promise<void> {
     }
     const profile = profileNameFor(args);
     const installed = installSkillIntoProfile(config, profile, resolved.selected.name);
-    const declared = addExternalSkill(config, resolved.selected.name, `installed from skill source ${resolved.selected.source_id}`);
+    const declared = addExternalSkill(config, resolved.selected, `installed from skill source ${resolved.selected.source_id}`);
     const configPath = await saveConfig(config, args);
     console.log(JSON.stringify({
       config: configPath,
@@ -392,6 +532,69 @@ export async function cmdSkill(args: SkillArgs): Promise<void> {
         source_kind: resolved.selected.source_kind,
       },
       bound_sources: boundSources,
+    }, null, compact(args)));
+    return;
+  }
+
+  if (action === "sync-check") {
+    await printSyncCheck(config, args);
+    return;
+  }
+
+  if (action === "registry-install") {
+    const pkg = args.package ?? args.name;
+    if (!pkg) throw new Error("tns skill registry-install requires a package, for example vercel-labs/agent-skills");
+    const skillNames = stringList(args.skill);
+    const cliArgs = ["add", pkg];
+    if (args.global) cliArgs.push("--global");
+    if (args.all) cliArgs.push("--all");
+    if (args.copy) cliArgs.push("--copy");
+    for (const agent of stringList(args.agent)) cliArgs.push("--agent", agent);
+    for (const skill of skillNames) cliArgs.push("--skill", skill);
+    if (args.yes !== false) cliArgs.push("--yes");
+    const result = await runSkillsCli(cliArgs, config.workspace || process.cwd());
+    const bound = await bindResolvedSkills(config, args, skillNames, pkg);
+    console.log(JSON.stringify({
+      registry: "skills.sh",
+      command: result.command,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      ...bound,
+    }, null, compact(args)));
+    return;
+  }
+
+  if (action === "registry-update") {
+    const names = args.name ? [args.name, ...stringList(args.skill)] : stringList(args.skill);
+    const cliArgs = ["update", ...names];
+    if (args.global) cliArgs.push("--global");
+    if (args.project) cliArgs.push("--project");
+    if (args.yes !== false) cliArgs.push("--yes");
+    const result = await runSkillsCli(cliArgs, config.workspace || process.cwd());
+    const refreshNames = names.length > 0 ? names : installedSkillSpecs(config).map((item) => item.name);
+    const bound = await bindResolvedSkills(config, args, refreshNames);
+    console.log(JSON.stringify({
+      registry: "skills.sh",
+      command: result.command,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      ...bound,
+    }, null, compact(args)));
+    return;
+  }
+
+  if (action === "registry-sync") {
+    const cliArgs = ["experimental_sync"];
+    for (const agent of stringList(args.agent)) cliArgs.push("--agent", agent);
+    if (args.yes !== false) cliArgs.push("--yes");
+    const result = await runSkillsCli(cliArgs, config.workspace || process.cwd());
+    const bound = await bindResolvedSkills(config, args, installedSkillSpecs(config).map((item) => item.name));
+    console.log(JSON.stringify({
+      registry: "skills.sh",
+      command: result.command,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      ...bound,
     }, null, compact(args)));
     return;
   }

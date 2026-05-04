@@ -217,6 +217,13 @@ export interface ExternalSkillSpec {
   name: string;
   required?: boolean;
   purpose?: string;
+  source_id?: string;
+  source_kind?: "skillbase" | "plugin" | "skills_dir";
+  source_path?: string;
+  path?: string;
+  content_hash?: string;
+  installed_at?: string;
+  registry_package?: string;
 }
 
 export interface ExternalMcpSpec {
