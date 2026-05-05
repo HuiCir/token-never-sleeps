@@ -268,6 +268,10 @@ export function explorationSettings(config: TnsConfig): ExplorationSettings {
     taskx_filename: String(cfg.taskx_filename ?? "taskx.md"),
     max_rounds_per_window: Math.max(1, Number(cfg.max_rounds_per_window ?? 1)),
     agent: String(cfg.agent ?? "tns-executor"),
+    plan_taskx: Boolean(cfg.plan_taskx ?? true),
+    taskx_min_score: Math.max(1, Math.min(100, Number(cfg.taskx_min_score ?? 75))),
+    taskx_branch_dir: String(cfg.taskx_branch_dir ?? ".tns/taskx"),
+    require_taskx_deliverables: Boolean(cfg.require_taskx_deliverables ?? true),
   };
 }
 

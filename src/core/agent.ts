@@ -25,6 +25,14 @@ interface RunAgentOptions {
     allowed_tools?: string[];
     disallowed_tools?: string[];
   };
+  claude?: {
+    bare?: boolean;
+    tools?: string;
+    strict_mcp_config?: boolean;
+    mcp_config?: string;
+    no_session_persistence?: boolean;
+  };
+  timeout_ms?: number;
   plugin_dir?: string;
   extra_add_dirs?: string[];
   paths?: StatePaths;
@@ -167,11 +175,25 @@ export const COMPILER_SCHEMA = {
   required: ["summary", "confidence", "findings", "blockers", "files_touched", "checks_run", "patch"],
 };
 
+export const TASK_PLANNER_SCHEMA = {
+  type: "object",
+  properties: {
+    summary: { type: "string" },
+    confidence: { type: "string", enum: ["high", "medium", "low"] },
+    assumptions: { type: "array", items: { type: "string" } },
+    warnings: { type: "array", items: { type: "string" } },
+    section_count: { type: "number" },
+    planned_task_markdown: { type: "string" },
+  },
+  required: ["summary", "confidence", "assumptions", "warnings", "section_count", "planned_task_markdown"],
+};
+
 export function schemaByName(name: string): Record<string, unknown> {
   if (name === "executor") return EXECUTOR_SCHEMA;
   if (name === "verifier") return VERIFIER_SCHEMA;
   if (name === "exploration") return EXPLORATION_SCHEMA;
   if (name === "compiler") return COMPILER_SCHEMA;
+  if (name === "task-planner") return TASK_PLANNER_SCHEMA;
   return {};
 }
 
@@ -242,7 +264,8 @@ export function buildCommonClaudeArgs(
     disallowed_tools?: string[];
   },
   pluginDirOverride?: string,
-  extraAddDirs?: string[]
+  extraAddDirs?: string[],
+  claudeOptions?: RunAgentOptions["claude"]
 ): string[] {
   const claude = requireClaude();
   const pluginRoot = pluginDirOverride || resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -260,6 +283,21 @@ export function buildCommonClaudeArgs(
     "--output-format",
     "json",
   ];
+  if (claudeOptions?.bare) {
+    args.push("--bare");
+  }
+  if (claudeOptions?.no_session_persistence) {
+    args.push("--no-session-persistence");
+  }
+  if (claudeOptions?.strict_mcp_config) {
+    args.push("--strict-mcp-config");
+  }
+  if (claudeOptions?.mcp_config != null) {
+    args.push("--mcp-config", claudeOptions.mcp_config);
+  }
+  if (claudeOptions?.tools != null) {
+    args.push("--tools", claudeOptions.tools);
+  }
   for (const dir of addDirs) {
     args.push("--add-dir", dir);
   }
@@ -361,13 +399,13 @@ export async function runAgent(
   prompt: string,
   options?: RunAgentOptions
 ): Promise<AgentOutput> {
-  const args = buildCommonClaudeArgs(config, workspace, options?.permissions, options?.plugin_dir, options?.extra_add_dirs);
+  const args = buildCommonClaudeArgs(config, workspace, options?.permissions, options?.plugin_dir, options?.extra_add_dirs, options?.claude);
   args.push("--agent", agent, "--json-schema", JSON.stringify(schema), prompt);
   const monitor = monitorSettings(config);
   const heartbeatMs = monitor.heartbeat_seconds * 1000;
-  const timeoutMs = monitor.max_agent_runtime_seconds > 0
+  const timeoutMs = options?.timeout_ms ?? (monitor.max_agent_runtime_seconds > 0
     ? monitor.max_agent_runtime_seconds * 1000
-    : DEFAULT_AGENT_TIMEOUT_MS;
+    : DEFAULT_AGENT_TIMEOUT_MS);
   const killGraceMs = monitor.kill_grace_seconds * 1000;
   const startedAtMs = Date.now();
   const startedAt = new Date(startedAtMs).toISOString();

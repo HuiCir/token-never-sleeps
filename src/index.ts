@@ -17,6 +17,7 @@ import { cmdDoctor } from "./commands/doctor.js";
 import { cmdRecover } from "./commands/recover.js";
 import { cmdTrace } from "./commands/trace.js";
 import { cmdCompile } from "./commands/compile.js";
+import { cmdPlan } from "./commands/plan.js";
 import { cmdSkill, cmdSkills } from "./commands/skills.js";
 
 async function main() {
@@ -27,7 +28,7 @@ async function main() {
   }
   const argv = await yargs(rawArgs)
     .command("help [topic]", "Show TNS help", (y) =>
-      y.positional("topic", { type: "string", choices: ["init", "run", "config", "permissions", "exploration", "status", "tmux", "btw", "policy", "doctor", "compile", "skills"] })
+      y.positional("topic", { type: "string", choices: ["init", "run", "config", "permissions", "exploration", "status", "tmux", "btw", "policy", "doctor", "compile", "plan", "skills"] })
     )
     .command("init", "Initialize TNS state or scaffold a workspace", (y) =>
       y.option("config", { type: "string" })
@@ -42,6 +43,17 @@ async function main() {
       y.option("config", { type: "string" })
         .option("synthesize", { type: "boolean", default: false })
         .option("apply", { type: "boolean", default: false })
+    )
+    .command("plan", "Convert natural language or a rough draft into a runnable task.md", (y) =>
+      y.option("config", { type: "string" })
+        .option("text", { type: "string" })
+        .option("input", { type: "string" })
+        .option("output", { type: "string" })
+        .option("apply", { type: "boolean", default: false })
+        .option("compile", { type: "boolean", default: false })
+        .option("check", { type: "boolean", default: false })
+        .option("polish", { type: "boolean", default: false })
+        .option("min-score", { type: "number", default: 75 })
     )
     .command("skills", "Inspect configured skillbases", (y) =>
       y.option("config", { type: "string" })
@@ -160,6 +172,9 @@ async function main() {
       break;
     case "compile":
       await cmdCompile(args as unknown as { config?: string; synthesize?: boolean; apply?: boolean });
+      break;
+    case "plan":
+      await cmdPlan(args as unknown as { config?: string; text?: string; input?: string; output?: string; apply?: boolean; compile?: boolean; check?: boolean; polish?: boolean; min_score?: number; minScore?: number });
       break;
     case "skills":
       await cmdSkills(args as unknown as { config?: string; action?: string; name?: string; source?: string[]; text?: string; file?: string; limit?: number; compact?: boolean });

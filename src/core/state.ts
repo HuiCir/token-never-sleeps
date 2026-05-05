@@ -27,6 +27,7 @@ export function statePaths(config: TnsConfig): StatePaths {
     compiled_dir: `${stateDir}/compiled`,
     compiled_program: `${stateDir}/compiled/program.json`,
     compiler_review: `${stateDir}/compiled/compiler-review.json`,
+    task_plan_review: `${stateDir}/compiled/task-plan-review.json`,
     lock_events: `${stateDir}/lock-events.jsonl`,
     tool_events: `${stateDir}/tool-events.jsonl`,
     injection_events: `${stateDir}/injection-events.jsonl`,

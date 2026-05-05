@@ -142,6 +142,10 @@ async function defaultConfig(workspace: string, taskPath: string, runner: "auto"
       taskx_filename: "taskx.md",
       max_rounds_per_window: 1,
       agent: "tns-executor",
+      plan_taskx: true,
+      taskx_min_score: 75,
+      taskx_branch_dir: ".tns/taskx",
+      require_taskx_deliverables: true,
     },
     monitor: {
       heartbeat_seconds: 30,
@@ -252,6 +256,10 @@ async function defaultConfig(workspace: string, taskPath: string, runner: "auto"
           skills: ["tns-program-compiler"],
           description: "Inject the compiler skill only for compile synthesis passes.",
         },
+        planner: {
+          skills: ["tns-task-planner"],
+          description: "Inject the planner skill only for task quality and task.md planning passes.",
+        },
         executor_task: {
           skills: [],
           external_skill_paths: [],
@@ -267,6 +275,10 @@ async function defaultConfig(workspace: string, taskPath: string, runner: "auto"
         {
           match_mode: "compile",
           profile: "compiler",
+        },
+        {
+          match_mode: "plan",
+          profile: "planner",
         },
         {
           match_mode: "executor",
@@ -459,7 +471,14 @@ export async function cmdInit(args: {
         created,
         runner: config.tmux.enabled && tmuxAvailable() ? "tmux" : "direct",
         tmux_available: tmuxAvailable(),
-        next: [`cd ${workspace}`, "tns status", "tns start"],
+        next: [
+          `cd ${workspace}`,
+          "tns plan --text \"describe the task\" --apply --compile",
+          "tns status",
+          "tns doctor",
+          "tns run --once",
+          "tns start",
+        ],
       }, null, 2));
     });
     return;

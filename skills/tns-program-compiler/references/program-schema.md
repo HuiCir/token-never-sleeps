@@ -153,7 +153,7 @@ skillbase, a plugin library, or a direct directory of skill folders.
   "skillbases": {
     "use_default_sources": true,
     "sources": [
-      { "id": "local-bench", "path": "/root/codex/skillbase", "kind": "skillbase", "priority": 10 }
+      { "id": "local-bench", "path": "/abs/path/to/skillbase", "kind": "skillbase", "priority": 10 }
     ]
   }
 }

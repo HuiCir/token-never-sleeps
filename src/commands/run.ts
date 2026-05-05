@@ -1,6 +1,6 @@
 import { loadConfig, workflowSettings, attemptsSettings, explorationSettings, outputSettings, policySettings, executionSettings } from "../lib/config.js";
 import { statePaths, ensureInitialized, loadManifest } from "../core/state.js";
-import { readJson, writeJson, appendJsonl, pathExists, removePath, resolvePath as resolveFsPath } from "../lib/fs.js";
+import { readJson, writeJson, appendJsonl, pathExists, removePath, resolvePath as resolveFsPath, writeText } from "../lib/fs.js";
 import { iso, utcNow, sleep } from "../lib/time.js";
 import { looksLikeUsageLimitError, looksLikeRetryableError } from "../lib/errors.js";
 import { selectSection, updateSection, recoverInProgressSections, ensureSectionDefaults, parseSections } from "../core/sections.js";
@@ -25,6 +25,7 @@ import { gcPluginSandbox, preparePluginSandbox, resolveInjectionProfile, resolve
 import { classifySectionRecovery } from "../core/self-healing.js";
 import { buildCompiledProgram } from "./compile.js";
 import { syncSectionStateFromTask } from "../core/section-state.js";
+import { evaluateTaskQuality, polishTaskText } from "./plan.js";
 
 interface RunLoopResult {
   ran: boolean;
@@ -135,10 +136,12 @@ function ensureFilesTouchedStayInWorkspace(workspace: string, filesTouched: stri
   for (const file of filesTouched) {
     const resolved = resolvePath(root, file);
     const rel = relative(root, resolved);
-    if (rel === "" || (!rel.startsWith("..") && !rel.includes("/../") && rel !== "..")) {
-      continue;
+    if (rel !== "" && (rel.startsWith("..") || rel.includes("/../") || rel === "..")) {
+      throw new Error(`files_touched contains path outside workspace: ${file}`);
     }
-    throw new Error(`files_touched contains path outside workspace: ${file}`);
+    if (rel === ".tns" || rel.startsWith(".tns/")) {
+      throw new Error(`files_touched contains protected TNS state path: ${file}`);
+    }
   }
 }
 
@@ -257,7 +260,7 @@ async function ensureCompiledProgramFresh(config: TnsConfig, paths: ReturnType<t
 }
 
 async function ensureSectionStateFresh(config: TnsConfig, paths: ReturnType<typeof statePaths>): Promise<void> {
-  await syncSectionStateFromTask(config.product_doc, paths, "task document sections changed after state initialization");
+  await syncSectionStateFromTask(config.product_doc, paths, "task document sections changed after state initialization", { preserveExtraSections: true });
 }
 
 async function applyRuntimeRecoveryDecisions(
@@ -458,6 +461,163 @@ async function importTaskxSections(paths: ReturnType<typeof statePaths>, taskxPa
   return importedCount;
 }
 
+interface TaskxCycleScope {
+  cycle_id: string;
+  deliverables: string[];
+  forbidden_terms: string[];
+}
+
+function stringsFromUnknown(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+async function detectTaskxCycleScope(workspace: string): Promise<TaskxCycleScope | null> {
+  const controlPath = resolveFsPath("task-delivery/xmode-control.json", workspace);
+  const control = await readJson<Record<string, unknown>>(controlPath);
+  const cycles = Array.isArray(control?.cycles) ? control.cycles : [];
+  const parsed = cycles
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    .map((item) => ({
+      id: typeof item.id === "string" ? item.id : "",
+      deliverables: stringsFromUnknown(item.deliverables),
+    }))
+    .filter((item) => item.id && item.deliverables.length > 0);
+  for (let index = 0; index < parsed.length; index += 1) {
+    const cycle = parsed[index];
+    const missing = [];
+    for (const deliverable of cycle.deliverables) {
+      if (!(await pathExists(resolveFsPath(deliverable, workspace)))) {
+        missing.push(deliverable);
+      }
+    }
+    if (missing.length > 0) {
+      const laterCycles = parsed.slice(index + 1);
+      return {
+        cycle_id: cycle.id,
+        deliverables: cycle.deliverables,
+        forbidden_terms: laterCycles.flatMap((item) => [item.id, ...item.deliverables]),
+      };
+    }
+  }
+  return null;
+}
+
+function scopedTaskxQuality(
+  report: ReturnType<typeof evaluateTaskQuality>,
+  markdown: string,
+  scope: TaskxCycleScope | null,
+  threshold: number
+): ReturnType<typeof evaluateTaskQuality> {
+  if (!scope) return report;
+  const forbidden = scope.forbidden_terms.filter((term) => term && markdown.includes(term));
+  if (forbidden.length === 0) return report;
+  const score = Math.min(report.score, Math.max(0, threshold - 1));
+  return {
+    ...report,
+    score,
+    grade: score >= threshold ? "good" : score >= Math.max(40, threshold - 20) ? "needs_polish" : "poor",
+    should_polish: true,
+    issues: Array.from(new Set([
+      ...report.issues,
+      `taskx includes later-cycle scope (${forbidden.slice(0, 5).join(", ")}); only ${scope.cycle_id} may be imported in this exploration round`,
+    ])),
+  };
+}
+
+async function prepareTaskxBranch(
+  config: TnsConfig,
+  paths: ReturnType<typeof statePaths>,
+  sourceTaskxPath: string,
+  round: number,
+  settings: ReturnType<typeof explorationSettings>
+): Promise<{ import_path: string; branch_dir: string; source_path: string; planned_path: string; quality_before: ReturnType<typeof evaluateTaskQuality>; quality_after: ReturnType<typeof evaluateTaskQuality>; planner_used: boolean }> {
+  const sourceText = await readFile(sourceTaskxPath, "utf-8");
+  const threshold = settings.taskx_min_score ?? 75;
+  const taskxScope = await detectTaskxCycleScope(paths.workspace);
+  const scopeInstruction = taskxScope
+    ? `
+
+TNS taskx scope constraint:
+- Import only the earliest missing xmode cycle: ${taskxScope.cycle_id}.
+- Required deliverables for this round:
+${taskxScope.deliverables.map((item) => `  - ${item}`).join("\n")}
+- Do not include later cycles or their deliverable paths in planned_task_markdown.
+`
+    : "";
+  const planningSourceText = `${sourceText.trim()}${scopeInstruction}`;
+  const qualityBefore = scopedTaskxQuality(evaluateTaskQuality(sourceText, threshold), sourceText, taskxScope, threshold);
+  const roundDir = resolveFsPath(`${settings.taskx_branch_dir || ".tns/taskx"}/round-${String(round).padStart(3, "0")}`, paths.workspace);
+  const sourcePath = resolveFsPath("source-taskx.md", roundDir);
+  const plannedPath = resolveFsPath("planned-taskx.md", roundDir);
+  await writeText(sourcePath, sourceText);
+
+  let plannedText = sourceText;
+  let plannerUsed = false;
+  if (settings.plan_taskx !== false && qualityBefore.should_polish) {
+    const planned = await polishTaskText(config, paths, `xmode taskx round ${round}: ${sourceTaskxPath}`, planningSourceText);
+    plannedText = planned.payload.planned_task_markdown;
+    plannerUsed = true;
+    await writeJson(resolveFsPath("planner-review.json", roundDir), {
+      round,
+      source_taskx_path: sourceTaskxPath,
+      payload: planned.payload,
+      usage: planned.usage,
+      run_id: planned.runId,
+    });
+  }
+
+  let qualityAfter = scopedTaskxQuality(evaluateTaskQuality(plannedText, threshold), plannedText, taskxScope, threshold);
+  if (settings.plan_taskx !== false && qualityAfter.score < threshold) {
+    const qualityBeforeRetry = qualityAfter;
+    const retrySource = `${planningSourceText}
+
+Planner retry feedback:
+- The previous planned taskx scored ${qualityAfter.score}/${threshold}.
+- Fix these issues before returning the full markdown:
+${qualityAfter.issues.map((issue) => `  - ${issue}`).join("\n") || "  - split the task into concrete, independently deliverable sections"}
+- If multiple deliverable files are listed, use separate ## sections for independent files so a 2-thread runner can execute them concurrently.
+`;
+    const replanned = await polishTaskText(config, paths, `xmode taskx round ${round} retry: ${sourceTaskxPath}`, retrySource);
+    plannedText = replanned.payload.planned_task_markdown;
+    plannerUsed = true;
+    qualityAfter = scopedTaskxQuality(evaluateTaskQuality(plannedText, threshold), plannedText, taskxScope, threshold);
+    await writeJson(resolveFsPath("planner-review-retry.json", roundDir), {
+      round,
+      source_taskx_path: sourceTaskxPath,
+      retry_reason: "quality_below_threshold",
+      quality_before_retry: qualityBeforeRetry,
+      payload: replanned.payload,
+      usage: replanned.usage,
+      run_id: replanned.runId,
+    });
+  }
+  if (settings.require_taskx_deliverables !== false && qualityAfter.score < threshold) {
+    await writeText(plannedPath, plannedText);
+    throw new Error(`taskx quality ${qualityAfter.score} is below required threshold ${threshold}; planner_used=${plannerUsed}`);
+  }
+
+  await writeText(plannedPath, plannedText);
+  await writeJson(resolveFsPath("taskx-quality.json", roundDir), {
+    round,
+    source_taskx_path: sourceTaskxPath,
+    source_path: sourcePath,
+    planned_path: plannedPath,
+    planner_used: plannerUsed,
+    quality_before: qualityBefore,
+    quality_after: qualityAfter,
+  });
+  return {
+    import_path: plannedPath,
+    branch_dir: roundDir,
+    source_path: sourcePath,
+    planned_path: plannedPath,
+    quality_before: qualityBefore,
+    quality_after: qualityAfter,
+    planner_used: plannerUsed,
+  };
+}
+
 async function runExplorationPass(config: TnsConfig, paths: ReturnType<typeof statePaths>, manifest: Awaited<ReturnType<typeof loadManifest>>, sections: Section[]): Promise<RunLoopResult | null> {
   const settings = explorationSettings(config);
   if (!settings.enabled) {
@@ -591,6 +751,39 @@ async function runExplorationPass(config: TnsConfig, paths: ReturnType<typeof st
     updated_at: iso(utcNow()),
   };
 
+  const importTaskxFromPath = async (taskxPath: string, event: string, summary: string): Promise<RunLoopResult> => {
+    if (!(await pathExists(taskxPath))) {
+      throw new Error(`exploration reported taskx_created but file was not found: ${taskxPath}`);
+    }
+    const taskxBranch = await prepareTaskxBranch(config, paths, taskxPath, roundsRun + 1, settings);
+    const imported = await importTaskxSections(paths, taskxBranch.import_path);
+    nextState.last_taskx_path = taskxBranch.planned_path;
+    let rawTaskxRemoved = false;
+    if (![taskxBranch.import_path, taskxBranch.source_path, taskxBranch.planned_path].includes(taskxPath)) {
+      await removePath(taskxPath);
+      rawTaskxRemoved = true;
+    }
+    await saveExplorationState(paths, nextState);
+    await appendJsonl(paths.activity, {
+      event,
+      at: iso(utcNow()),
+      taskx_path: taskxPath,
+      import_path: taskxBranch.import_path,
+      branch_dir: taskxBranch.branch_dir,
+      source_path: taskxBranch.source_path,
+      planned_path: taskxBranch.planned_path,
+      planner_used: taskxBranch.planner_used,
+      quality_before: taskxBranch.quality_before.score,
+      quality_after: taskxBranch.quality_after.score,
+      imported_sections: imported,
+      raw_taskx_removed: rawTaskxRemoved,
+      summary,
+    });
+    await rebuildArtifactIndex(paths);
+    await heartbeatRuntimeSerial(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
+    return { ran: imported > 0 };
+  };
+
   if (result.outcome === "blocked") {
     await saveExplorationState(paths, nextState);
     await appendJsonl(paths.activity, {
@@ -605,22 +798,14 @@ async function runExplorationPass(config: TnsConfig, paths: ReturnType<typeof st
 
   if (result.taskx_created && settings.allow_taskx) {
     const taskxPath = resolveFsPath(result.taskx_path || settings.taskx_filename, paths.workspace);
-    if (!(await pathExists(taskxPath))) {
-      throw new Error(`exploration reported taskx_created but file was not found: ${result.taskx_path}`);
+    return importTaskxFromPath(taskxPath, "exploration_taskx_imported", result.summary);
+  }
+
+  if (settings.allow_taskx) {
+    const taskxPath = resolveFsPath(settings.taskx_filename, paths.workspace);
+    if (await pathExists(taskxPath)) {
+      return importTaskxFromPath(taskxPath, "exploration_taskx_orphan_imported", result.summary);
     }
-    const imported = await importTaskxSections(paths, taskxPath);
-    nextState.last_taskx_path = taskxPath;
-    await saveExplorationState(paths, nextState);
-    await appendJsonl(paths.activity, {
-      event: "exploration_taskx_imported",
-      at: iso(utcNow()),
-      taskx_path: taskxPath,
-      imported_sections: imported,
-      summary: result.summary,
-    });
-    await rebuildArtifactIndex(paths);
-    await heartbeatRuntimeSerial(paths, { current_section: "", current_step: "", sleep_until: null, ...clearAgentRuntimeFields() });
-    return { ran: imported > 0 };
   }
 
   await saveExplorationState(paths, nextState);
@@ -697,6 +882,26 @@ function selectParallelBatch(plan: FsmParallelPlan, sections: Section[], maxAtte
     if (unfinished) return [];
   }
   return [];
+}
+
+function selectUnplannedParallelBatch(plan: FsmParallelPlan | null, sections: Section[], maxAttempts: number, config: TnsConfig): FsmParallelPlanItem[] {
+  const planned = new Set((plan?.batches ?? []).flatMap((batch) => batch.states.map((item) => item.state)));
+  const maxThreads = Math.max(1, Math.min(2, Number(plan?.max_threads ?? config.threads ?? config.thread ?? 1)));
+  if (maxThreads <= 1) return [];
+  return sections
+    .map(ensureSectionDefaults)
+    .filter((section) => !planned.has(section.id))
+    .filter((section) => sectionReadyForParallel(section, maxAttempts))
+    .slice(0, maxThreads)
+    .map((section) => ({
+      state: section.id,
+      thread: section.id,
+      resource: `section:${section.id}`,
+      depends_on: [],
+      skills: [],
+      verifier_skills: [],
+      reason: "unplanned-imported-section",
+    }));
 }
 
 async function updateSectionOnly(paths: ReturnType<typeof statePaths>, sectionId: string, updater: (section: Section) => void): Promise<Section> {
@@ -1038,14 +1243,16 @@ async function runParallelBatchIfReady(
   policies: ReturnType<typeof policySettings>
 ): Promise<RunLoopResult | null> {
   const plan = await loadCompiledParallelPlan(paths);
-  if (!plan) return null;
-  const runnable = selectParallelBatch(plan, sections, maxAttempts);
-  if (runnable.length <= 1) return null;
+  const runnable = plan ? selectParallelBatch(plan, sections, maxAttempts) : [];
+  const fallback = runnable.length > 1 ? [] : selectUnplannedParallelBatch(plan, sections, maxAttempts, config);
+  const selectedRunnable = runnable.length > 1 ? runnable : fallback;
+  if (selectedRunnable.length <= 1) return null;
+  const maxThreads = Math.max(1, Math.min(2, Number(plan?.max_threads ?? config.threads ?? config.thread ?? selectedRunnable.length)));
 
   const wf = workflowSettings(config);
   const approvals = await loadApprovals(paths);
   const byId = new Map(sections.map((section) => [section.id, ensureSectionDefaults(section)]));
-  for (const item of runnable) {
+  for (const item of selectedRunnable) {
     const section = byId.get(item.state);
     if (!section) continue;
     const step = section.current_step || wf.entry;
@@ -1061,17 +1268,18 @@ async function runParallelBatchIfReady(
   await appendJsonl(paths.activity, {
     event: "parallel_batch_start",
     at: iso(utcNow()),
-    states: runnable.map((item) => item.state),
-    max_threads: plan.max_threads,
+    states: selectedRunnable.map((item) => item.state),
+    max_threads: maxThreads,
+    reason: selectedRunnable[0]?.reason,
   });
-  await heartbeatRuntimeSerial(paths, { current_section: `parallel:${runnable.map((item) => item.state).join(",")}`, current_step: "batch", sleep_until: null, ...clearAgentRuntimeFields() });
+  await heartbeatRuntimeSerial(paths, { current_section: `parallel:${selectedRunnable.map((item) => item.state).join(",")}`, current_step: "batch", sleep_until: null, ...clearAgentRuntimeFields() });
 
-  const settled = await Promise.allSettled(runnable.map((item) => executeParallelSectionWorkflow(config, paths, item.state, policies)));
+  const settled = await Promise.allSettled(selectedRunnable.map((item) => executeParallelSectionWorkflow(config, paths, item.state, policies)));
   await appendJsonl(paths.activity, {
     event: "parallel_batch_end",
     at: iso(utcNow()),
     results: settled.map((result, index) => ({
-      state: runnable[index].state,
+      state: selectedRunnable[index].state,
       status: result.status,
       ran: result.status === "fulfilled" ? result.value.ran : false,
       error: result.status === "rejected" ? String(result.reason).slice(0, 500) : null,
@@ -1602,7 +1810,7 @@ Permission profile:
 
 ${injectionPromptBlock(injectionProfile)}
 
-Stay inside the workspace root. Do not intentionally access files outside ${paths.workspace}. If progress would require a command family outside the current permission profile, stop and report the missing command family as a blocker instead of guessing.
+Stay inside the workspace root. Do not intentionally access files outside ${paths.workspace}. Do not edit .tns state files; they are owned by the runner. If progress would require a command family outside the current permission profile, stop and report the missing command family as a blocker instead of guessing.
 `;
 
   if (node.prompt_mode === "executor") {
@@ -1664,7 +1872,11 @@ Rules:
 - Do not reopen vague or speculative work.
 - Stay inside the workspace root. Do not intentionally access files outside ${paths.workspace}.
 - If you find explicit, concrete new requirements that should become additional tracked work, create ${taskxFilename} in the workspace using markdown sections.
-- Only create ${taskxFilename} when the follow-up work is materially useful and clearly actionable.
+- Any ${taskxFilename} work must be concretely deliverable: include expected files/artifacts, acceptance criteria, and verification commands or checks.
+- When one backlog cycle lists multiple independent deliverables, create one ## section per deliverable so a 2-thread run can execute the branch concurrently.
+- Keep ${taskxFilename} as an exploration branch. Do not rewrite the primary task document.
+- If the workspace contains a branch control artifact such as task-delivery/xmode-control.json with cycles and deliverable paths, treat it as an exploration backlog, not as completed work. Inspect the listed deliverable paths on disk. When any deliverable for a cycle is missing, create ${taskxFilename} for the earliest missing cycle only.
+- Only create ${taskxFilename} when the follow-up work is materially useful, clearly actionable, and not already covered by completed sections.
 - If no such follow-up is needed, do not create ${taskxFilename}.
 
 Return JSON only.

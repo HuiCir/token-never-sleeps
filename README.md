@@ -8,6 +8,7 @@ It keeps the core local runner behavior:
 - `tns run` executes one direct local loop
 - `tns start` chooses tmux or direct mode
 - `tns status` shows tracked section state
+- `tns plan` converts natural language or a rough draft into a runnable `task.md`
 - `tns plan-import` converts a markdown plan into tracked sections
 - `tns compile` emits a deterministic orchestration program, including bounded parallel plans
 - `tns skill` manages configured skill sources and installed skill bindings
@@ -67,7 +68,7 @@ Then run the real orchestration loop:
 
 ```bash
 cd ./my-task
-tns compile
+tns plan --text "create a short project checklist in checklist.md and verify the file exists" --apply --compile
 tns status
 tns doctor
 tns run --once
@@ -80,6 +81,31 @@ tns start
 tns btw
 tns trace
 ```
+
+## Task Planning
+
+When `task.md` is still a natural-language request or a rough draft, run a
+planner pass before compiling:
+
+```bash
+tns plan --check
+tns plan --polish --apply --compile
+tns plan --text "add a CLI command, update docs, and verify with tests" --apply
+tns plan --input rough-task.md --output planned-task.md
+tns plan --apply --compile
+```
+
+`tns plan --check` scores task quality locally without calling Claude.
+`tns plan --polish` uses that score as a gate and only calls the dedicated task
+planner agent when the task is below `--min-score` (default `75`). Planner
+results are recorded in `.tns/compiled/task-plan-review.json`. With `--apply`,
+TNS backs up the current task document under `.tns/compiled/`, replaces
+`task.md`, and syncs `.tns/sections.json`. The generated task document uses
+concrete `##` sections with objectives, inputs, deliverables, acceptance
+criteria, and verification steps. It also preserves explicit dependency lines
+so the compiler can build a stronger program contract. If the planner suggests
+skills, it writes non-binding `Recommended skills:` notes; it does not emit
+executable `import <skill>` lines.
 
 ## Deterministic compilation
 
@@ -267,7 +293,7 @@ Default local sources include workspace `.claude/skills`, `~/.agents/skills`,
 agent ecosystems, for example:
 
 ```bash
-tns skills --action doctor --source /root/.claude/plugins --source /root/codex/skillbase
+tns skills --action doctor --source ~/.claude/plugins --source /abs/path/to/skillbase
 ```
 
 Skill injection is stage-local:
@@ -325,7 +351,7 @@ Key points:
 - safe command families are passed through Claude `--allowedTools`
 - escalated profiles can require an approval tag such as `restricted-step`
 - missing approvals freeze the workspace and create `.tns/approvals.json`
-- executor `files_touched` are audited and rejected if they point outside the workspace
+- executor `files_touched` are audited and rejected if they point outside the workspace or into protected `.tns` runner state
 
 See also:
 
@@ -335,14 +361,16 @@ tns help permissions
 
 ## Exploration xmode (beta)
 
-`token-never-sleeps` can optionally run one post-completion exploration pass after
-all tracked sections are done.
+`token-never-sleeps` can optionally run bounded post-completion exploration passes after
+all currently tracked sections are done.
 
 Use it when you want:
 
 - one extra detail and robustness review
 - small concrete refinements after the main task is already complete
-- optional follow-up work captured into `taskx.md`
+- optional follow-up work captured into a taskx exploration branch
+- planner-assisted polishing of low-quality or rough taskx drafts before import
+- continuous xmode cycles such as "find earliest missing branch cycle, import it, execute it, then review again"
 
 Example config:
 
@@ -352,14 +380,26 @@ Example config:
     "enabled": true,
     "allow_taskx": true,
     "taskx_filename": "taskx.md",
-    "max_rounds_per_window": 1,
-    "agent": "tns-executor"
+    "max_rounds_per_window": 3,
+    "agent": "tns-executor",
+    "plan_taskx": true,
+    "taskx_min_score": 75,
+    "taskx_branch_dir": ".tns/taskx",
+    "require_taskx_deliverables": true
   }
 }
 ```
 
 If the exploration pass finds explicit new requirements, it can create `taskx.md`,
-TNS will import those sections, and the runner will continue with them.
+TNS archives the source and planned branch under `.tns/taskx/round-XXX/`, imports
+the planned sections, removes the transient root `taskx.md`, and continues running.
+Imported taskx sections are preserved in `.tns/sections.json` without rewriting the
+primary `task.md`.
+
+When a workspace uses `task-delivery/xmode-control.json` with ordered `cycles` and
+deliverable paths, xmode treats it as a branch backlog. Each round targets the
+earliest cycle with missing deliverables only, so a 2-thread runner can execute the
+cycle's independent taskx sections before the next exploration round imports more.
 
 ## Long-running Claude sessions
 

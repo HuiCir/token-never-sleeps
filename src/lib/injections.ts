@@ -9,7 +9,7 @@ import type { InjectionProfile, Section, StageInjectionRule, StatePaths, TnsConf
 
 export interface ResolvedInjectionProfile {
   profile_name: string | null;
-  mode: "compile" | "executor" | "verifier" | "exploration";
+  mode: "compile" | "plan" | "executor" | "verifier" | "exploration";
   skills: string[];
   explicit_skills?: string[];
   auto_skills?: string[];
@@ -111,7 +111,7 @@ function skillRequestName(input: string): string {
 
 function canUseTnsInternalSkill(profile: ResolvedInjectionProfile, skill: string): boolean {
   const name = skillRequestName(skill);
-  return profile.mode === "compile" && name.startsWith("tns-");
+  return (profile.mode === "compile" || profile.mode === "plan") && name.startsWith("tns-");
 }
 
 export async function preparePluginSandbox(paths: StatePaths, profile: ResolvedInjectionProfile, runId: string, config?: TnsConfig): Promise<{ plugin_root: string; skills: string[]; external_skill_paths: string[]; add_dirs: string[]; resolved_skills: Record<string, string>; resolved_internal_skills: Record<string, string>; unresolved_skills: string[] }> {

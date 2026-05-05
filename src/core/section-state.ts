@@ -15,7 +15,8 @@ function sectionStateSignature(section: Section): string {
 export async function syncSectionStateFromTask(
   productDoc: string,
   paths: StatePaths,
-  reason: string
+  reason: string,
+  options?: { preserveExtraSections?: boolean }
 ): Promise<{ changed: boolean; previous_count: number; current_count: number }> {
   const parsed = parseSections(productDoc).map(ensureSectionDefaults);
   const existing = ((await readJson<Section[]>(paths.sections)) || []).map(ensureSectionDefaults);
@@ -46,6 +47,30 @@ export async function syncSectionStateFromTask(
       current_step: prior.current_step,
     };
   });
+
+  if (options?.preserveExtraSections) {
+    const parsedTitles = new Set(parsed.map((section) => section.title));
+    const usedIds = new Set(merged.map((section) => section.id));
+    let nextId = merged.length + 1;
+    for (const section of existing) {
+      if (parsedTitles.has(section.title)) continue;
+      const preserved = { ...section };
+      while (usedIds.has(preserved.id)) {
+        preserved.id = `sec-${String(nextId).padStart(3, "0")}`;
+        preserved.anchor = preserved.anchor || `## ${preserved.title}`;
+        nextId += 1;
+      }
+      usedIds.add(preserved.id);
+      merged.push(preserved);
+    }
+  }
+
+  if (
+    merged.length === existing.length &&
+    merged.every((section, index) => JSON.stringify(section) === JSON.stringify(existing[index]))
+  ) {
+    return { changed: false, previous_count: existing.length, current_count: merged.length };
+  }
 
   await writeJson(paths.sections, merged);
   const diagnostics = await readJson<Record<string, unknown>>(paths.diagnostics, {});

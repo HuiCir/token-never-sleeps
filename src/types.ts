@@ -48,6 +48,7 @@ export interface StatePaths {
   compiled_dir: string;
   compiled_program: string;
   compiler_review: string;
+  task_plan_review: string;
   lock_events: string;
   tool_events: string;
   injection_events: string;
@@ -132,6 +133,10 @@ export interface ExplorationSettings {
   taskx_filename: string;
   max_rounds_per_window: number;
   agent: string;
+  plan_taskx?: boolean;
+  taskx_min_score?: number;
+  taskx_branch_dir?: string;
+  require_taskx_deliverables?: boolean;
 }
 
 export type ValidatorStage = "preflight" | "pre_step" | "post_step" | "post_run";
@@ -263,7 +268,7 @@ export interface InjectionProfile {
 }
 
 export interface StageInjectionRule {
-  match_mode?: "compile" | "executor" | "verifier" | "exploration";
+  match_mode?: "compile" | "plan" | "executor" | "verifier" | "exploration";
   match_title?: string;
   match_step?: string;
   profile: string;
@@ -490,7 +495,7 @@ export interface AgentUsage {
 }
 
 export interface AgentOutput {
-  payload: ExecutorResult | VerifierResult | ExplorationResult | CompilerResult;
+  payload: ExecutorResult | VerifierResult | ExplorationResult | CompilerResult | TaskPlanResult;
   usage: AgentUsage;
   raw: Record<string, unknown>;
 }
@@ -626,6 +631,15 @@ export interface CompilerResult {
   files_touched: string[];
   checks_run: string[];
   patch: CompilerPatch;
+}
+
+export interface TaskPlanResult {
+  summary: string;
+  confidence: "high" | "medium" | "low";
+  assumptions: string[];
+  warnings: string[];
+  section_count: number;
+  planned_task_markdown: string;
 }
 
 export interface ToolUseEvent {

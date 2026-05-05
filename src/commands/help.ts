@@ -26,6 +26,9 @@ Common commands:
   tns compile
       Compile task.md and config into a deterministic orchestration program.
 
+  tns plan --text "..." --apply
+      Turn a natural-language task or rough draft into a runnable task.md.
+
   tns start
       Use managed tmux when configured and available; otherwise run directly.
 
@@ -49,22 +52,26 @@ Common commands:
 
 Typical flows:
   1. Create a workspace:
-       tns init --workspace /abs/path/to/project --template novel-writing
+       tns init --workspace /abs/path/to/project
 
-  2. Inspect before running:
+  2. Turn rough intent into runnable sections:
        cd /abs/path/to/project
-       tns status
+       tns plan --text "write the exact task here" --apply --compile
 
-  3. Manual loop:
+  3. Inspect before running:
+       tns status
+       tns doctor
+
+  4. Manual loop:
        tns run --once
 
-  4. Long unattended loop:
+  5. Long unattended loop:
        tns start
 
-  5. Read-only monitoring during long runs:
+  6. Read-only monitoring during long runs:
        tns btw
 
-  6. Approve a gated stage:
+  7. Approve a gated stage:
        tns approve --tag restricted-step
 
 Help topics:
@@ -74,6 +81,7 @@ Help topics:
   tns help permissions
   tns help exploration
   tns help policy
+  tns help plan
   tns help compile
   tns help skills
   tns help status
@@ -234,6 +242,10 @@ Defaults:
     taskx_filename
     max_rounds_per_window
     agent
+    plan_taskx
+    taskx_min_score
+    taskx_branch_dir
+    require_taskx_deliverables
 
 Important fields:
   refresh_hours / refresh_minutes / refresh_seconds
@@ -298,7 +310,7 @@ Install behavior:
   - sync-check compares the recorded content_hash with the currently resolved skill.
 
 With explicit sources:
-  tns skills --action doctor --source /root/.claude/plugins --source /root/codex/skillbase
+  tns skills --action doctor --source ~/.claude/plugins --source /abs/path/to/skillbase
   tns skills --action resolve --name pdf --source /path/to/skillbase
 
 Config:
@@ -364,6 +376,38 @@ Use this when:
 
 Recommendation:
   Run compile after major task/config changes, then let executor/verifier read the compiled program.
+`,
+  plan: `
+TNS plan
+
+Convert a natural-language request or rough task draft into a runnable task.md:
+  tns plan --check
+  tns plan --polish --apply --compile
+  tns plan --text "ship a CLI feature and tests" --apply
+  tns plan --input rough-task.md --output planned-task.md
+  tns plan --apply --compile
+
+Input:
+  --text       Inline natural-language request.
+  --input      Markdown/plaintext draft file. Defaults to the configured task.md.
+
+Quality gate:
+  --check      Score task quality locally without calling Claude.
+  --polish     Run planner only when quality is below --min-score.
+  --min-score  Minimum acceptable score, default 75.
+
+Output:
+  --output     Write the planned markdown to a separate file.
+  --apply      Replace the configured task.md and sync .tns/sections.json.
+  --compile    After --apply, emit .tns/compiled/program.json.
+
+Planner behavior:
+  - creates concrete ## sections with Objective, Inputs, Deliverables,
+    Acceptance criteria, and Verification
+  - preserves user intent without expanding scope
+  - may write non-binding Recommended skills notes, but never executable import lines
+  - writes a backup under .tns/compiled before replacing task.md
+  - records the planner result in .tns/compiled/task-plan-review.json
 `,
   policy: `
 TNS policy and precompiled command sets
@@ -436,32 +480,45 @@ TNS exploration mode
 Exploration mode is optional and disabled by default.
 
 Purpose:
-  After all tracked sections are complete, TNS can run one additional review pass
-  to improve detail, consistency, and robustness. If it finds explicit new
-  follow-up requirements, it may create taskx.md and import those sections back
-  into the active queue.
+  After all currently tracked sections are complete, TNS can run bounded review
+  passes to improve detail, consistency, and robustness. If it finds explicit
+  follow-up requirements, it may create taskx.md, polish it through the planner,
+  archive the branch, and import those sections back into the active queue.
 
 Config shape:
   "exploration": {
     "enabled": false,
     "allow_taskx": true,
     "taskx_filename": "taskx.md",
-    "max_rounds_per_window": 1,
-    "agent": "tns-executor"
+    "max_rounds_per_window": 3,
+    "agent": "tns-executor",
+    "plan_taskx": true,
+    "taskx_min_score": 75,
+    "taskx_branch_dir": ".tns/taskx",
+    "require_taskx_deliverables": true
   }
 
 Behavior:
   1. Main task sections finish.
-  2. TNS runs one post-completion review pass.
+  2. TNS runs the next post-completion review pass.
   3. Small concrete refinements may be applied directly.
   4. If explicit, actionable new requirements are found, TNS creates taskx.md.
-  5. taskx.md sections are imported and the runner continues with them.
+  5. Low-quality taskx drafts are polished by the planner before import.
+  6. Source and planned taskx are archived under .tns/taskx/round-XXX/.
+  7. Imported taskx sections are preserved in .tns/sections.json without
+     rewriting the primary task.md, and the transient root taskx.md is removed.
+
+Branch backlog:
+  If task-delivery/xmode-control.json contains ordered cycles with deliverable
+  paths, each round targets the earliest cycle with missing deliverables only.
+  This lets a 2-thread runner execute that branch before the next xmode round.
 
 Guards:
   - default is disabled
   - max_rounds_per_window prevents infinite self-expansion
   - taskx creation is optional
   - workspace path audit still applies to files_touched
+  - .tns runner state is protected from section agent files_touched
 
 Recommended start:
   tns run --once
