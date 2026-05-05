@@ -13,6 +13,7 @@ It keeps the core local runner behavior:
 - `tns compile` emits a deterministic orchestration program, including bounded parallel plans
 - `tns skill` manages configured skill sources and installed skill bindings
 - `tns skills` inspects local skillbases and resolves stage-local skill imports without modifying config
+- `tns gateway` runs a local protocol bus for multi-terminal coordination
 
 What this package intentionally leaves out:
 
@@ -81,6 +82,56 @@ tns start
 tns btw
 tns trace
 ```
+
+## Gateway Coordination (beta)
+
+Gateway is a long-running local protocol bus for multiple TNS terminals inside
+one workspace. It prepares the collaboration layer for resource waits, task
+dispatch, and protocol messages between clients.
+
+Start the gateway in one terminal:
+
+```bash
+tns gateway serve
+```
+
+Use other terminals as clients:
+
+```bash
+tns gateway register --client client-a
+tns gateway register --client client-b
+tns gateway heartbeat --client client-a
+tns gateway send --from client-a --to client-b --type ping --payload '{"hello":true}'
+tns gateway recv --client client-b
+```
+
+Dispatch and complete work:
+
+```bash
+tns gateway dispatch --from client-a --to client-b --task "Review sec-003" --task-type review --payload '{"section":"sec-003"}'
+tns gateway claim --client client-b --task-type review
+tns gateway complete --client client-b --task-id TASK_ID --payload '{"status":"done"}'
+```
+
+Wait for a named TNS resource lock to become free:
+
+```bash
+tns gateway wait-resource --client client-b --resource state --timeout-ms 30000
+```
+
+Gateway writes protocol state under `.tns/gateway/`:
+
+- `inbox.jsonl`: client requests
+- `events.jsonl`: protocol event stream
+- `responses/`: per-request responses
+- `clients.json`: registered clients and heartbeats
+- `tasks.json`: dispatch/claim/complete queue
+
+Every gateway event is also mirrored to `.tns/hook-events.jsonl` as a
+`gateway_hook` record. Hook payloads include protocol version, workspace,
+gateway pid, request id, client ids, task id, resource, event name, timestamp,
+and payload/result data when present. Use `tns gateway events`, `tns gateway
+status`, `tns status`, `tns btw`, or `tns trace` to inspect the bus.
 
 ## Task Planning
 

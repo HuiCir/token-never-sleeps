@@ -34,6 +34,13 @@ export function statePaths(config: TnsConfig): StatePaths {
     agent_runs_dir: `${stateDir}/agent-runs`,
     hook_events: `${stateDir}/hook-events.jsonl`,
     runner_log: `${stateDir}/runner.log`,
+    gateway_dir: `${stateDir}/gateway`,
+    gateway_inbox: `${stateDir}/gateway/inbox.jsonl`,
+    gateway_events: `${stateDir}/gateway/events.jsonl`,
+    gateway_status: `${stateDir}/gateway/status.json`,
+    gateway_clients: `${stateDir}/gateway/clients.json`,
+    gateway_tasks: `${stateDir}/gateway/tasks.json`,
+    gateway_responses_dir: `${stateDir}/gateway/responses`,
   };
 }
 
@@ -83,6 +90,15 @@ export async function initState(config: TnsConfig): Promise<void> {
   });
   await removePath(paths.freeze);
   await writeJson(paths.tmux, {});
+  await writeJson(paths.gateway_clients, {});
+  await writeJson(paths.gateway_tasks, []);
+  await writeJson(paths.gateway_status, {
+    active: false,
+    protocol_version: 1,
+    updated_at: null,
+    processed_ids: [],
+    waiters: [],
+  });
   await removePath(paths.runtime);
 
   const { appendJsonl } = await import("../lib/fs.js");

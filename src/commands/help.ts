@@ -50,6 +50,9 @@ Common commands:
   tns skills --action doctor --source /path/to/skillbase
       Inspect skillbase/plugin skill sources without modifying config.
 
+  tns gateway serve
+      Run the local gateway protocol bus for multi-terminal coordination.
+
 Typical flows:
   1. Create a workspace:
        tns init --workspace /abs/path/to/project
@@ -84,6 +87,7 @@ Help topics:
   tns help plan
   tns help compile
   tns help skills
+  tns help gateway
   tns help status
   tns help tmux
   tns help btw
@@ -344,6 +348,49 @@ Separation:
   TNS package-local skills are not part of the external user skillbase. They are
   only resolved for internal compile-time tns-* skills. Executor/verifier skill
   imports resolve from configured user skillbases or explicit external paths.
+`,
+  gateway: `
+TNS gateway
+
+Gateway is a beta local protocol bus for multiple TNS terminals in the same
+workspace. It is designed for long-lived collaboration features: clients can
+register, exchange protocol messages, wait for named resources, dispatch tasks,
+claim tasks, and complete tasks while the gateway records hook-friendly events.
+
+Start the long-running gateway in one terminal:
+  tns gateway serve
+
+Use other terminals as clients:
+  tns gateway register --client client-a
+  tns gateway register --client client-b
+  tns gateway heartbeat --client client-a
+  tns gateway send --from client-a --to client-b --type ping --payload '{"hello":true}'
+  tns gateway recv --client client-b
+
+Task dispatch:
+  tns gateway dispatch --from client-a --to client-b --task "Review sec-003" --task-type review --payload '{"section":"sec-003"}'
+  tns gateway claim --client client-b --task-type review
+  tns gateway complete --client client-b --task-id TASK_ID --payload '{"status":"done"}'
+
+Resource waiting:
+  tns gateway wait-resource --client client-b --resource state --timeout-ms 30000
+
+Observability:
+  tns gateway status
+  tns gateway events --limit 50
+  tns trace
+
+Protocol files:
+  .tns/gateway/inbox.jsonl       client requests
+  .tns/gateway/events.jsonl      gateway event stream
+  .tns/gateway/responses/        per-request responses
+  .tns/gateway/clients.json      registered client heartbeats
+  .tns/gateway/tasks.json        dispatch/claim/complete queue
+  .tns/hook-events.jsonl         hook stream; gateway events are mirrored here
+
+Hook payloads include protocol_version, workspace, gateway_pid, request_id,
+client_id/from/to, task_id, resource, event name, timestamp, and payload/result
+fields when applicable.
 `,
   compile: `
 TNS compile

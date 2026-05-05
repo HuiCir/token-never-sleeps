@@ -19,6 +19,7 @@ import { cmdTrace } from "./commands/trace.js";
 import { cmdCompile } from "./commands/compile.js";
 import { cmdPlan } from "./commands/plan.js";
 import { cmdSkill, cmdSkills } from "./commands/skills.js";
+import { cmdGateway } from "./commands/gateway.js";
 
 async function main() {
   const rawArgs = hideBin(process.argv);
@@ -28,7 +29,7 @@ async function main() {
   }
   const argv = await yargs(rawArgs)
     .command("help [topic]", "Show TNS help", (y) =>
-      y.positional("topic", { type: "string", choices: ["init", "run", "config", "permissions", "exploration", "status", "tmux", "btw", "policy", "doctor", "compile", "plan", "skills"] })
+      y.positional("topic", { type: "string", choices: ["init", "run", "config", "permissions", "exploration", "status", "tmux", "btw", "policy", "doctor", "compile", "plan", "skills", "gateway"] })
     )
     .command("init", "Initialize TNS state or scaffold a workspace", (y) =>
       y.option("config", { type: "string" })
@@ -93,6 +94,30 @@ async function main() {
         .option("all", { type: "boolean", default: false })
         .option("bind", { type: "boolean", default: true })
         .option("disable-default-sources", { type: "boolean", default: false })
+        .option("compact", { type: "boolean", default: false })
+    )
+    .command("gateway [action]", "Run or use the local TNS gateway protocol bus", (y) =>
+      y.positional("action", {
+        type: "string",
+        choices: ["serve", "status", "register", "heartbeat", "send", "recv", "dispatch", "claim", "complete", "wait-resource", "events"],
+        default: "status",
+      })
+        .option("config", { type: "string" })
+        .option("client", { type: "string" })
+        .option("from", { type: "string" })
+        .option("to", { type: "string" })
+        .option("type", { type: "string" })
+        .option("payload", { type: "string" })
+        .option("task", { type: "string" })
+        .option("task-type", { type: "string" })
+        .option("task-id", { type: "string" })
+        .option("resource", { type: "string" })
+        .option("timeout-ms", { type: "number" })
+        .option("poll-ms", { type: "number" })
+        .option("duration-seconds", { type: "number" })
+        .option("limit", { type: "number" })
+        .option("once", { type: "boolean", default: false })
+        .option("wait", { type: "boolean", default: true })
         .option("compact", { type: "boolean", default: false })
     )
     .command("doctor", "Run preflight and environment diagnostics", (y) =>
@@ -181,6 +206,9 @@ async function main() {
       break;
     case "skill":
       await cmdSkill(args as unknown as { config?: string; action?: string; name?: string; source?: string[]; path?: string; id?: string; kind?: "auto" | "skillbase" | "plugin" | "skills_dir"; priority?: number; profile?: string; mode?: "executor" | "verifier" | "compile"; text?: string; file?: string; limit?: number; package?: string; skill?: string[]; agent?: string[]; global?: boolean; project?: boolean; yes?: boolean; copy?: boolean; all?: boolean; bind?: boolean; disable_default_sources?: boolean; disableDefaultSources?: boolean; compact?: boolean });
+      break;
+    case "gateway":
+      await cmdGateway(args as unknown as { config?: string; action?: string; client?: string; from?: string; to?: string; type?: string; payload?: string; task?: string; task_type?: string; taskType?: string; task_id?: string; taskId?: string; resource?: string; timeout_ms?: number; timeoutMs?: number; poll_ms?: number; pollMs?: number; duration_seconds?: number; durationSeconds?: number; limit?: number; once?: boolean; wait?: boolean; compact?: boolean });
       break;
     case "doctor":
       await cmdDoctor(args as unknown as { config?: string });

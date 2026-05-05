@@ -55,6 +55,13 @@ export interface StatePaths {
   agent_runs_dir: string;
   hook_events: string;
   runner_log: string;
+  gateway_dir: string;
+  gateway_inbox: string;
+  gateway_events: string;
+  gateway_status: string;
+  gateway_clients: string;
+  gateway_tasks: string;
+  gateway_responses_dir: string;
 }
 
 export interface TmuxSettings {

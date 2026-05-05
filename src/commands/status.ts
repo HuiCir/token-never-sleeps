@@ -70,6 +70,9 @@ export async function cmdStatus(args: { config?: string }): Promise<void> {
   const approvals = await loadApprovals(paths);
   const exploration = await readJson<ExplorationState>(paths.exploration);
   const diagnostics = await readJson<Record<string, unknown>>(paths.diagnostics, {});
+  const gateway = await readJson<Record<string, unknown>>(paths.gateway_status, {});
+  const gatewayClients = await readJson<Record<string, unknown>>(paths.gateway_clients, {});
+  const gatewayTasks = await readJson<Array<Record<string, unknown>>>(paths.gateway_tasks, []);
   const runtimeHeartbeatAt = runtime?.heartbeat_at ? Date.parse(runtime.heartbeat_at) : NaN;
   const runtimeStale = Boolean(
     runtime?.active && (
@@ -124,6 +127,17 @@ export async function cmdStatus(args: { config?: string }): Promise<void> {
       exists: await pathExists(paths.compiler_review),
     },
     exploration,
+    gateway: {
+      status: gateway,
+      clients: Object.keys(gatewayClients ?? {}).sort(),
+      tasks: {
+        total: Array.isArray(gatewayTasks) ? gatewayTasks.length : 0,
+        pending: Array.isArray(gatewayTasks) ? gatewayTasks.filter((task) => task.status === "pending").length : 0,
+        claimed: Array.isArray(gatewayTasks) ? gatewayTasks.filter((task) => task.status === "claimed").length : 0,
+        done: Array.isArray(gatewayTasks) ? gatewayTasks.filter((task) => task.status === "done").length : 0,
+      },
+      events: paths.gateway_events,
+    },
     workflow: workflowSettings(config),
     tmux,
   };

@@ -89,6 +89,9 @@ export async function cmdBtw(args: BtwArgs): Promise<void> {
   const tmux = await readJson<TmuxStatus>(paths.tmux);
   const exploration = await readJson<ExplorationState>(paths.exploration);
   const diagnostics = await readJson<Record<string, unknown>>(paths.diagnostics);
+  const gateway = await readJson<Record<string, unknown>>(paths.gateway_status, {});
+  const gatewayClients = await readJson<Record<string, unknown>>(paths.gateway_clients, {});
+  const gatewayTasks = await readJson<Array<Record<string, unknown>>>(paths.gateway_tasks, []);
   const runtime = await loadRuntime(paths);
   const approvals = await loadApprovals(paths);
   const lock = await readWorkspaceLock(paths.workspace);
@@ -188,6 +191,17 @@ export async function cmdBtw(args: BtwArgs): Promise<void> {
       last_taskx_path: exploration.last_taskx_path,
       updated_at: exploration.updated_at,
     } : null,
+    gateway: {
+      status: gateway,
+      clients: Object.keys(gatewayClients ?? {}).sort(),
+      tasks: {
+        total: Array.isArray(gatewayTasks) ? gatewayTasks.length : 0,
+        pending: Array.isArray(gatewayTasks) ? gatewayTasks.filter((task) => task.status === "pending").length : 0,
+        claimed: Array.isArray(gatewayTasks) ? gatewayTasks.filter((task) => task.status === "claimed").length : 0,
+        done: Array.isArray(gatewayTasks) ? gatewayTasks.filter((task) => task.status === "done").length : 0,
+      },
+      events: paths.gateway_events,
+    },
     tmux: tmux || null,
     next_wake_at: nextWakeAt,
     recent_reviews: reviewLimit > 0 ? reviews.slice(Math.max(reviews.length - reviewLimit, 0)) : [],
