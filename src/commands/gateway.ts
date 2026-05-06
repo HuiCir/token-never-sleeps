@@ -6,6 +6,7 @@ import { appendJsonl, pathExists, readJson, writeJson } from "../lib/fs.js";
 import { iso, sleep, utcNow } from "../lib/time.js";
 import { readResourceLock, withResourceLocks } from "../lib/lock.js";
 import { ensureInitialized, statePaths } from "../core/state.js";
+import { cmdGatewayWeb } from "./gateway-web.js";
 import type { StatePaths } from "../types.js";
 
 const PROTOCOL_VERSION = 1;
@@ -21,7 +22,8 @@ type GatewayAction =
   | "claim"
   | "complete"
   | "wait-resource"
-  | "events";
+  | "events"
+  | "web";
 
 interface GatewayArgs {
   config?: string;
@@ -43,6 +45,8 @@ interface GatewayArgs {
   pollMs?: number;
   duration_seconds?: number;
   durationSeconds?: number;
+  host?: string;
+  port?: number;
   limit?: number;
   once?: boolean;
   wait?: boolean;
@@ -548,6 +552,11 @@ async function cmdGatewayStatus(paths: StatePaths, args: GatewayArgs): Promise<v
 
 export async function cmdGateway(args: GatewayArgs): Promise<void> {
   const action = (args.action ?? "status") as GatewayAction;
+  if (action === "web") {
+    await cmdGatewayWeb(args);
+    return;
+  }
+
   const config = loadConfig(args.config);
   const paths = await ensureInitialized(config, { autoInit: false });
   await mkdir(paths.gateway_dir, { recursive: true });

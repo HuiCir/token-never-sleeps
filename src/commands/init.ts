@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { cp, mkdir, readFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,7 @@ import type { PermissionSettings, TnsConfig, WorkflowSettings } from "../types.j
 import { probeTmux, tmuxPath } from "../lib/platform.js";
 import { withResourceLocks } from "../lib/lock.js";
 import { statePaths } from "../core/state.js";
+import { iso, utcNow } from "../lib/time.js";
 
 type TemplateName = "blank" | "novel-writing";
 
@@ -29,6 +31,7 @@ Acceptance criteria:
 `;
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const DEFAULT_DASHBOARD_URL = "http://127.0.0.1:48731/";
 
 function tmuxAvailable(): boolean {
   return Boolean(tmuxPath());
@@ -419,6 +422,38 @@ function mergeConfig(base: TnsConfig, template: Partial<TnsConfig>, workspace: s
   return merged;
 }
 
+function normalizeDashboardUrl(value: string | undefined): string {
+  const raw = value || process.env.TNS_DASHBOARD_URL || DEFAULT_DASHBOARD_URL;
+  return raw.replace(/\/+$/, "");
+}
+
+function dashboardKey(): string {
+  const value = randomBytes(4).toString("hex");
+  return `${value.slice(0, 4)}-${value.slice(4)}`;
+}
+
+function dashboardBinding(workspace: string, configPath: string, dashboardUrl?: string): Record<string, unknown> {
+  const frontend = normalizeDashboardUrl(dashboardUrl);
+  const workspaceParam = encodeURIComponent(workspace);
+  const key = dashboardKey();
+  return {
+    enabled: true,
+    mode: "frontend-backend-separated",
+    created_at: iso(utcNow()),
+    key,
+    workspace,
+    config: configPath,
+    frontend_url: `${frontend}/?workspace=${workspaceParam}&key=${encodeURIComponent(key)}`,
+    default_frontend_url: frontend,
+    snapshot_url: `${frontend}/api/snapshot?workspace=${workspaceParam}&key=${encodeURIComponent(key)}`,
+    stream_url: `${frontend}/api/stream?workspace=${workspaceParam}&key=${encodeURIComponent(key)}`,
+    workspaces_url: `${frontend}/api/workspaces`,
+    init_url: `${frontend}/api/workspaces/init`,
+    backend: "tns gateway web",
+    state_source: ".tns real workspace state",
+  };
+}
+
 export async function cmdInit(args: {
   config?: string;
   workspace?: string;
@@ -426,67 +461,130 @@ export async function cmdInit(args: {
   template?: TemplateName;
   runner?: "auto" | "direct" | "tmux";
   force?: boolean;
+  dashboard?: boolean;
+  dashboard_url?: string;
+  dashboardUrl?: string;
 }): Promise<void> {
   if (args.workspace) {
-    const workspace = resolve(args.workspace);
-    await withResourceLocks(workspace, ["workspace", "config", "state"], "tns init", async () => {
-      const taskPath = resolve(args.task || `${workspace}/task.md`);
-      const configPath = resolve(args.config || `${workspace}/tns_config.json`);
-      const templateName = args.template || "blank";
-      const force = Boolean(args.force);
-
-      await mkdir(workspace, { recursive: true });
-      await copyTemplateSupportFiles(templateName, workspace, force);
-
-      const created = { task: false, config: false, template: templateName };
-      if (force || !(await pathExists(taskPath))) {
-        await writeText(taskPath, await templateTask(templateName));
-        created.task = true;
-      }
-
-      const baseConfig = await defaultConfig(workspace, taskPath, args.runner || "auto");
-      const globalConfig = loadGlobalConfig();
-      const template = await templateConfig(templateName);
-      const mergedConfig = Object.keys(globalConfig).length > 0
-        ? {
-            ...template,
-            workspace,
-            product_doc: taskPath,
-            tmux: template.tmux ?? baseConfig.tmux,
-          }
-        : mergeConfig(baseConfig, template, workspace, taskPath, args.runner || "auto");
-
-      if (force || !(await pathExists(configPath))) {
-        await writeJson(configPath, mergedConfig);
-        created.config = true;
-      }
-
-      const config = loadConfig(configPath);
-      await initState(config);
-      console.log(JSON.stringify({
-        initialized: `${workspace}/.tns`,
-        workspace,
-        config: configPath,
-        task: taskPath,
-        created,
-        runner: config.tmux.enabled && tmuxAvailable() ? "tmux" : "direct",
-        tmux_available: tmuxAvailable(),
-        next: [
-          `cd ${workspace}`,
-          "tns plan --text \"describe the task\" --apply --compile",
-          "tns status",
-          "tns doctor",
-          "tns run --once",
-          "tns start",
-        ],
-      }, null, 2));
-    });
+    console.log(JSON.stringify(await initWorkspace({ ...args, workspace: args.workspace }), null, 2));
     return;
   }
 
   const config = loadConfig(args.config);
   await withResourceLocks(config.workspace, ["workspace", "config", "state"], "tns init", async () => {
     await initState(config);
+    if (args.dashboard) {
+      const configPath = config._config_path ?? args.config ?? `${config.workspace}/tns_config.json`;
+      const dashboard = dashboardBinding(resolve(config.workspace), resolve(configPath), args.dashboard_url ?? args.dashboardUrl);
+      await writeJson(resolve(config.workspace, ".tns", "dashboard.json"), dashboard);
+      console.log(JSON.stringify({
+        initialized: `${config.workspace}/.tns`,
+        workspace: resolve(config.workspace),
+        config: resolve(configPath),
+        dashboard,
+      }, null, 2));
+      return;
+    }
     console.log(`initialized TNS in ${config.workspace}/.tns`);
   });
+}
+
+export interface InitWorkspaceResult {
+  initialized: string;
+  workspace: string;
+  config: string;
+  task: string;
+  created: { task: boolean; config: boolean; template: TemplateName };
+  dashboard: Record<string, unknown> | null;
+  runner: "direct" | "tmux";
+  tmux_available: boolean;
+  next: string[];
+}
+
+export async function initWorkspace(args: {
+  config?: string;
+  workspace: string;
+  task?: string;
+  task_text?: string;
+  taskText?: string;
+  template?: TemplateName;
+  runner?: "auto" | "direct" | "tmux";
+  force?: boolean;
+  thread?: number;
+  threads?: number;
+  dashboard?: boolean;
+  dashboard_url?: string;
+  dashboardUrl?: string;
+}): Promise<InitWorkspaceResult> {
+  const workspace = resolve(args.workspace);
+  let result: InitWorkspaceResult | null = null;
+  await withResourceLocks(workspace, ["workspace", "config", "state"], "tns init", async () => {
+    const taskPath = resolve(args.task || `${workspace}/task.md`);
+    const configPath = resolve(args.config || `${workspace}/tns_config.json`);
+    const templateName = args.template || "blank";
+    const force = Boolean(args.force);
+
+    await mkdir(workspace, { recursive: true });
+    await copyTemplateSupportFiles(templateName, workspace, force);
+
+    const created = { task: false, config: false, template: templateName };
+    const taskText = args.task_text ?? args.taskText;
+    if (force || taskText || !(await pathExists(taskPath))) {
+      await writeText(taskPath, taskText || await templateTask(templateName));
+      created.task = true;
+    }
+
+    const baseConfig = await defaultConfig(workspace, taskPath, args.runner || "auto");
+    const globalConfig = loadGlobalConfig();
+    const template = await templateConfig(templateName);
+    const mergedConfig = Object.keys(globalConfig).length > 0
+      ? {
+          ...template,
+          workspace,
+          product_doc: taskPath,
+          thread: args.thread ?? args.threads ?? template.thread ?? baseConfig.thread,
+          tmux: template.tmux ?? baseConfig.tmux,
+        }
+      : {
+          ...mergeConfig(baseConfig, template, workspace, taskPath, args.runner || "auto"),
+          thread: args.thread ?? args.threads ?? template.thread ?? baseConfig.thread,
+        };
+
+    if (force || !(await pathExists(configPath))) {
+      await writeJson(configPath, mergedConfig);
+      created.config = true;
+    }
+
+    const config = loadConfig(configPath);
+    await initState(config);
+    const dashboard = args.dashboard
+      ? dashboardBinding(workspace, configPath, args.dashboard_url ?? args.dashboardUrl)
+      : null;
+    if (dashboard) {
+      await writeJson(resolve(workspace, ".tns", "dashboard.json"), dashboard);
+    }
+    result = {
+      initialized: `${workspace}/.tns`,
+      workspace,
+      config: configPath,
+      task: taskPath,
+      created,
+      dashboard,
+      runner: config.tmux.enabled && tmuxAvailable() ? "tmux" : "direct",
+      tmux_available: tmuxAvailable(),
+      next: [
+        `cd ${workspace}`,
+        ...(dashboard ? [`open ${dashboard.frontend_url}`] : []),
+        "tns plan --text \"describe the task\" --apply --compile",
+        "tns status",
+        "tns doctor",
+        "tns run --once",
+        "tns start",
+      ],
+    };
+  });
+  if (!result) {
+    throw new Error(`failed to initialize workspace: ${workspace}`);
+  }
+  return result;
 }

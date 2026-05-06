@@ -10,6 +10,7 @@
     ".claude-plugin",
     "agents",
     "dist",
+    "scripts",
     "skills",
     "templates",
     "README.md",
@@ -18,7 +19,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && chmod +x dist/index.js",
     "prepack": "npm run build",
-    "smoke": "node dist/index.js help"
+    "smoke": "node dist/index.js help",
+    "test": "npm run build && node scripts/dashboard-auth-smoke.mjs"
   },
   "keywords": [
     "claude",

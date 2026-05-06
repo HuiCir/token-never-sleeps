@@ -37,6 +37,8 @@ async function main() {
         .option("task", { type: "string" })
         .option("template", { type: "string", choices: ["blank", "novel-writing"], default: "blank" })
         .option("runner", { type: "string", choices: ["auto", "direct", "tmux"], default: "auto" })
+        .option("dashboard", { type: "boolean", default: false })
+        .option("dashboard-url", { type: "string" })
         .option("force", { type: "boolean", default: false })
     )
     .command("status", "Show TNS status", (y) => y.option("config", { type: "string" }))
@@ -99,10 +101,12 @@ async function main() {
     .command("gateway [action]", "Run or use the local TNS gateway protocol bus", (y) =>
       y.positional("action", {
         type: "string",
-        choices: ["serve", "status", "register", "heartbeat", "send", "recv", "dispatch", "claim", "complete", "wait-resource", "events"],
+        choices: ["serve", "status", "register", "heartbeat", "send", "recv", "dispatch", "claim", "complete", "wait-resource", "events", "web"],
         default: "status",
       })
         .option("config", { type: "string" })
+        .option("host", { type: "string" })
+        .option("port", { type: "number" })
         .option("client", { type: "string" })
         .option("from", { type: "string" })
         .option("to", { type: "string" })
@@ -190,7 +194,7 @@ async function main() {
       await cmdHelp(args as unknown as { topic?: string });
       break;
     case "init":
-      await cmdInit(args as unknown as { config?: string; workspace?: string; task?: string; template?: "blank" | "novel-writing"; runner?: "auto" | "direct" | "tmux"; force?: boolean });
+      await cmdInit(args as unknown as { config?: string; workspace?: string; task?: string; template?: "blank" | "novel-writing"; runner?: "auto" | "direct" | "tmux"; dashboard?: boolean; dashboard_url?: string; dashboardUrl?: string; force?: boolean });
       break;
     case "status":
       await cmdStatus(args as unknown as { config?: string });
@@ -208,7 +212,7 @@ async function main() {
       await cmdSkill(args as unknown as { config?: string; action?: string; name?: string; source?: string[]; path?: string; id?: string; kind?: "auto" | "skillbase" | "plugin" | "skills_dir"; priority?: number; profile?: string; mode?: "executor" | "verifier" | "compile"; text?: string; file?: string; limit?: number; package?: string; skill?: string[]; agent?: string[]; global?: boolean; project?: boolean; yes?: boolean; copy?: boolean; all?: boolean; bind?: boolean; disable_default_sources?: boolean; disableDefaultSources?: boolean; compact?: boolean });
       break;
     case "gateway":
-      await cmdGateway(args as unknown as { config?: string; action?: string; client?: string; from?: string; to?: string; type?: string; payload?: string; task?: string; task_type?: string; taskType?: string; task_id?: string; taskId?: string; resource?: string; timeout_ms?: number; timeoutMs?: number; poll_ms?: number; pollMs?: number; duration_seconds?: number; durationSeconds?: number; limit?: number; once?: boolean; wait?: boolean; compact?: boolean });
+      await cmdGateway(args as unknown as { config?: string; action?: string; host?: string; port?: number; client?: string; from?: string; to?: string; type?: string; payload?: string; task?: string; task_type?: string; taskType?: string; task_id?: string; taskId?: string; resource?: string; timeout_ms?: number; timeoutMs?: number; poll_ms?: number; pollMs?: number; duration_seconds?: number; durationSeconds?: number; limit?: number; once?: boolean; wait?: boolean; compact?: boolean });
       break;
     case "doctor":
       await cmdDoctor(args as unknown as { config?: string });

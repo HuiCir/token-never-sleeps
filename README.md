@@ -14,6 +14,7 @@ It keeps the core local runner behavior:
 - `tns skill` manages configured skill sources and installed skill bindings
 - `tns skills` inspects local skillbases and resolves stage-local skill imports without modifying config
 - `tns gateway` runs a local protocol bus for multi-terminal coordination
+- `tns gateway web` serves a local dashboard backed by real workspace state
 
 What this package intentionally leaves out:
 
@@ -57,6 +58,12 @@ Create a blank workspace:
 
 ```bash
 tns init --workspace ./my-task
+```
+
+Create a workspace and bind it to the split dashboard:
+
+```bash
+tns init --workspace ./my-task --dashboard
 ```
 
 Create a template workspace:
@@ -132,6 +139,67 @@ Every gateway event is also mirrored to `.tns/hook-events.jsonl` as a
 gateway pid, request id, client ids, task id, resource, event name, timestamp,
 and payload/result data when present. Use `tns gateway events`, `tns gateway
 status`, `tns status`, `tns btw`, or `tns trace` to inspect the bus.
+
+Start a read-only dashboard for the same workspace:
+
+```bash
+tns gateway web --port 48731
+```
+
+Open the printed URL in a browser. The web frontend is separated from the
+backend state API: it renders only data from `/api/snapshot`, `/api/events`, and
+the `/api/stream` SSE feed. The backend reads the real `.tns` state files and
+gateway files, including task details, sections, runtime agents, bounded
+parallel thread lanes, skill injection events, configured skill sources,
+gateway clients/tasks, resource locks and waiters, hooks, diagnostics,
+approvals, artifacts, reviews, exploration state, and compiled program data. It
+does not emit mock agent or test data.
+
+Dashboard API access is project-key authenticated. Run `tns init --dashboard`
+to create `.tns/dashboard.json`; it contains a generated `xxxx-xxxx` key and
+prebuilt frontend, snapshot, and stream URLs. The key can be supplied as
+`?key=xxxx-xxxx`, `Authorization: Bearer xxxx-xxxx`, or
+`x-tns-dashboard-key`.
+
+The backend defaults to the workspace from its config. Authenticated dashboard
+workspace switching and `POST /api/workspaces/init` are limited to that
+workspace's parent directory. A browser-created workspace runs the same init
+path as `tns init`; it creates a real `task.md`, `tns_config.json`, `.tns/`
+state directory, and a fresh dashboard key for that new project.
+
+CLI-created workspaces can opt into the same dashboard binding:
+
+```bash
+tns init --workspace /tmp/my-task --dashboard --dashboard-url http://127.0.0.1:48731/
+```
+
+This writes `.tns/dashboard.json` with the frontend URL, snapshot API URL, SSE
+stream URL, and init API URL. The dashboard remains frontend/backend separated:
+the web window consumes the local `tns gateway web` API/SSE backend, while that
+backend reads real `.tns` state for task, section, agent/thread, skill, gateway,
+lock, hook, artifact, and diagnostic monitoring. If users want a separate
+static/proxy setup, they should configure that locally around the same HTTP API;
+TNS does not require a specific reverse proxy.
+
+Local dashboard flow:
+
+```bash
+tns init --workspace /tmp/my-task --runner direct --dashboard
+cd /tmp/my-task
+tns gateway web --port 48731
+```
+
+In another terminal, read the generated URL:
+
+```bash
+node -e 'const fs=require("fs"); const d=JSON.parse(fs.readFileSync(".tns/dashboard.json","utf8")); console.log(d.frontend_url)'
+```
+
+Open that `frontend_url`. It contains the workspace path and project key. API
+calls without the matching key return `401`, and a key from one dashboard-bound
+workspace does not authorize another workspace. The Workspaces tab can create a
+sibling test workspace; that request is authenticated with the current
+workspace key and the created workspace receives its own fresh key.
 
 ## Task Planning
 

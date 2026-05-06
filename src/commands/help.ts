@@ -53,6 +53,9 @@ Common commands:
   tns gateway serve
       Run the local gateway protocol bus for multi-terminal coordination.
 
+  tns gateway web
+      Open a local dashboard API/web view backed by real .tns state.
+
 Typical flows:
   1. Create a workspace:
        tns init --workspace /abs/path/to/project
@@ -99,6 +102,7 @@ TNS init
 New workspace:
   tns init --workspace /abs/path/to/project
   tns init --workspace /abs/path/to/project --template novel-writing
+  tns init --workspace /abs/path/to/project --dashboard
 
 Creates:
   task.md
@@ -111,6 +115,11 @@ Options:
   --runner auto      Enable managed tmux only when tmux is installed.
   --runner direct    Always use direct mode.
   --runner tmux      Require tmux.
+  --dashboard        Write .tns/dashboard.json so the split web dashboard can
+                     discover and monitor this workspace.
+  --dashboard-url URL
+                     Dashboard frontend URL. Defaults to TNS_DASHBOARD_URL
+                     or http://127.0.0.1:48731/.
   --force            Overwrite existing task/config.
 
 Existing config:
@@ -118,6 +127,8 @@ Existing config:
 
 Notes:
   - init creates task.md, tns_config.json, and .tns state files.
+  - --dashboard does not run agents; it binds the workspace to the frontend
+    and API/SSE monitoring endpoints.
   - template support files are copied into the workspace.
   - runner auto selects direct mode when tmux is unavailable.
   - after cd into a workspace, --config is optional for normal commands.
@@ -378,7 +389,27 @@ Resource waiting:
 Observability:
   tns gateway status
   tns gateway events --limit 50
+  tns gateway web --port 48731
   tns trace
+
+Dashboard:
+  tns gateway web starts a local HTTP server with a browser UI and JSON/SSE API:
+    /
+    /api/snapshot
+    /api/events
+    /api/stream
+
+  Dashboard API access requires the workspace key in .tns/dashboard.json. The
+  key can be sent as ?key=xxxx-xxxx, Authorization: Bearer xxxx-xxxx, or
+  x-tns-dashboard-key.
+
+  The dashboard reflects task.md, sections, runtime agents,
+  bounded parallel thread lanes, skill injection events, gateway clients/tasks,
+  resource locks and waiters, hooks, diagnostics, approvals, artifacts, reviews,
+  exploration state, and compiled program data from the workspace's real .tns
+  files. It does not create synthetic events or mock agent state. Browser
+  workspace creation uses the real tns init path and is authenticated by the
+  current workspace key.
 
 Protocol files:
   .tns/gateway/inbox.jsonl       client requests
