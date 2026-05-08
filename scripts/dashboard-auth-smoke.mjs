@@ -115,7 +115,7 @@ try {
       "content-type": "application/json",
       "x-tns-dashboard-key": dashboard.key,
     },
-    body: JSON.stringify({ name: `child-${Date.now()}`, task: "# Task\n\n## A\nA\n", dashboard: true }),
+    body: JSON.stringify({ name: `child-${Date.now()}`, task: "# Task\n\n## A\nA\n", dashboard: true, thread: 12 }),
   });
   assert(out.res.status === 200, "init with key must succeed");
   const childWorkspace = out.body.workspace;
@@ -124,6 +124,8 @@ try {
   assert(childWorkspace && childWorkspace !== workspace, "child workspace should be distinct");
   assert(/^[0-9a-f]{4}-[0-9a-f]{4}$/.test(childKey), "child dashboard key must match xxxx-xxxx");
   assert(childKey !== dashboard.key, "child key must be unique");
+  const childConfig = JSON.parse(readFileSync(resolve(childWorkspace, "tns_config.json"), "utf-8"));
+  assert(childConfig.thread === 12, "dashboard init must preserve requested thread count");
 
   out = await jsonFetch(`api/snapshot?workspace=${encodeURIComponent(childWorkspace)}&key=${dashboard.key}`);
   assert(out.res.status === 401, "parent key must not authorize child workspace");

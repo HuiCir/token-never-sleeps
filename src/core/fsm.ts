@@ -155,7 +155,7 @@ function collectThreadControls(program: FsmProgramSettings): FsmThreadControlPla
 
 export function buildParallelPlan(program: FsmProgramSettings): FsmParallelPlan {
   const requestedThreads = Math.max(1, Number(program.threads ?? program.thread ?? program.parallel?.max_threads ?? 1));
-  const maxThreads = Math.max(1, Math.min(2, Number(program.parallel?.max_threads ?? requestedThreads)));
+  const maxThreads = Math.max(1, Number(program.parallel?.max_threads ?? requestedThreads));
   const mode = program.parallel?.mode ?? (requestedThreads > 1 ? "auto" : "off");
   const controls = collectThreadControls(program);
   if (mode === "off" || maxThreads <= 1) {
@@ -165,7 +165,7 @@ export function buildParallelPlan(program: FsmProgramSettings): FsmParallelPlan 
       max_threads: 1,
       batches: [],
       controls,
-      notes: ["parallel optimization is disabled; set program.threads to 2 or program.parallel.mode to auto"],
+      notes: ["parallel optimization is disabled; set program.threads above 1 or program.parallel.mode to auto"],
     };
   }
 
@@ -180,7 +180,7 @@ export function buildParallelPlan(program: FsmProgramSettings): FsmParallelPlan 
     batches,
     controls,
     notes: [
-      "automatic FSM parallel planning is bounded to 2 threads on this machine profile",
+      "automatic FSM parallel planning follows the configured thread budget",
       "only task states without conditional transitions or transition actions are auto-batched",
       "states sharing the same parallel.resource are not placed in the same batch",
       "FSM thread control instructions are compiled into control metadata for the runner",

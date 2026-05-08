@@ -251,6 +251,27 @@ export interface ExternalDependencySettings {
   mcp?: ExternalMcpSpec[];
 }
 
+export type AgentProviderName = "claude" | "codex";
+
+export interface CodexProviderSettings {
+  sandbox?: "read-only" | "workspace-write" | "danger-full-access";
+  approval_policy?: "untrusted" | "on-failure" | "on-request" | "never";
+  bypass_approvals_and_sandbox?: boolean;
+  ephemeral?: boolean;
+  ignore_user_config?: boolean;
+  ignore_rules?: boolean;
+  json_events?: boolean;
+}
+
+export interface AgentProviderSettings {
+  name?: AgentProviderName;
+  command?: string;
+  model?: string;
+  profile?: string;
+  extra_args?: string[];
+  codex?: CodexProviderSettings;
+}
+
 export interface ExecutorClassSettings {
   agent: string;
   workspace: "primary" | "temporary";
@@ -464,6 +485,7 @@ export interface TnsConfig {
   program?: FsmProgramSettings;
   injections?: InjectionSettings;
   skillbases?: SkillbaseSettings;
+  agent_provider?: AgentProviderName | AgentProviderSettings;
   _config_path?: string;
   _program_from_compiled?: boolean;
 }

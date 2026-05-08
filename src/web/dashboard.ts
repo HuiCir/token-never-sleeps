@@ -418,7 +418,7 @@ export const dashboardHtml = `<!doctype html>
       const form = '<form id="init-form">' +
         '<div class="form-grid">' +
           '<label>Name<input name="name" placeholder="tns-web-test-' + Date.now() + '"></label>' +
-          '<label>Thread<input name="thread" type="number" min="1" max="8" value="1"></label>' +
+          '<label>Thread<input name="thread" type="number" min="1" value="1"></label>' +
           '<label>Template<select name="template"><option value="blank">blank</option><option value="novel-writing">novel-writing</option></select></label>' +
         '</div>' +
         '<label>task.md<textarea name="task">' + esc(defaultTask) + '</textarea></label>' +

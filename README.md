@@ -329,7 +329,7 @@ Set `thread` or `threads` to request bounded parallel orchestration:
 }
 ```
 
-The current planning layer keeps heavy Claude parallel plans bounded to two threads on this machine profile. The compiler emits a `parallel_plan` with batches, resources, dependencies, and thread controls. The standard runner executes the next ready parallel batch with `Promise.allSettled`; singleton batches continue through the conservative one-section path. State-level hints include:
+The planning layer follows the configured thread budget instead of applying a fixed local machine cap. The compiler emits a `parallel_plan` with batches, resources, dependencies, and thread controls. The standard runner executes the next ready parallel batch with `Promise.allSettled`; singleton batches continue through the conservative one-section path. State-level hints include:
 
 - `parallel.thread`
 - `parallel.resource`
@@ -407,9 +407,8 @@ tns skill registry-sync --agent claude-code
 ```
 
 Default local sources include workspace `.claude/skills`, `~/.agents/skills`,
-`~/.codex/skills`, `~/.claude/skills`, `~/.codex/.tmp/plugins`, and
-`~/.claude/plugins`. You can add multiple explicit local sources for different
-agent ecosystems, for example:
+`~/.claude/skills`, and `~/.claude/plugins`. You can add multiple explicit local
+sources for different agent ecosystems, for example:
 
 ```bash
 tns skills --action doctor --source ~/.claude/plugins --source /abs/path/to/skillbase
@@ -517,7 +516,7 @@ primary `task.md`.
 
 When a workspace uses `task-delivery/xmode-control.json` with ordered `cycles` and
 deliverable paths, xmode treats it as a branch backlog. Each round targets the
-earliest cycle with missing deliverables only, so a 2-thread runner can execute the
+earliest cycle with missing deliverables only, so a multi-thread runner can execute the
 cycle's independent taskx sections before the next exploration round imports more.
 
 ## Long-running Claude sessions

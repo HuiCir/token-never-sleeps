@@ -7,6 +7,7 @@ import type {
   ExecutionSettings,
   InjectionSettings,
   InjectionProfile,
+  AgentProviderSettings,
   StageInjectionRule,
   ExplorationSettings,
   MonitorSettings,
@@ -403,6 +404,30 @@ export function externalSettings(config: TnsConfig): ExternalDependencySettings 
       required: item.required ?? true,
       purpose: item.purpose,
     })) : [],
+  };
+}
+
+export function agentProviderSettings(config: TnsConfig): Required<AgentProviderSettings> {
+  const raw = config.agent_provider;
+  const cfg: AgentProviderSettings = typeof raw === "string"
+    ? { name: raw }
+    : (raw ?? {});
+  const name = cfg.name === "codex" ? "codex" : "claude";
+  return {
+    name,
+    command: cfg.command ?? name,
+    model: cfg.model ?? "",
+    profile: cfg.profile ?? "",
+    extra_args: Array.isArray(cfg.extra_args) ? cfg.extra_args.map(String) : [],
+    codex: {
+      sandbox: cfg.codex?.sandbox,
+      approval_policy: cfg.codex?.approval_policy,
+      bypass_approvals_and_sandbox: Boolean(cfg.codex?.bypass_approvals_and_sandbox ?? false),
+      ephemeral: Boolean(cfg.codex?.ephemeral ?? true),
+      ignore_user_config: Boolean(cfg.codex?.ignore_user_config ?? false),
+      ignore_rules: Boolean(cfg.codex?.ignore_rules ?? false),
+      json_events: Boolean(cfg.codex?.json_events ?? true),
+    },
   };
 }
 

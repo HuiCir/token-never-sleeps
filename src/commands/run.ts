@@ -576,7 +576,7 @@ Planner retry feedback:
 - The previous planned taskx scored ${qualityAfter.score}/${threshold}.
 - Fix these issues before returning the full markdown:
 ${qualityAfter.issues.map((issue) => `  - ${issue}`).join("\n") || "  - split the task into concrete, independently deliverable sections"}
-- If multiple deliverable files are listed, use separate ## sections for independent files so a 2-thread runner can execute them concurrently.
+- If multiple deliverable files are listed, use separate ## sections for independent files so a multi-thread runner can execute them concurrently.
 `;
     const replanned = await polishTaskText(config, paths, `xmode taskx round ${round} retry: ${sourceTaskxPath}`, retrySource);
     plannedText = replanned.payload.planned_task_markdown;
@@ -886,7 +886,7 @@ function selectParallelBatch(plan: FsmParallelPlan, sections: Section[], maxAtte
 
 function selectUnplannedParallelBatch(plan: FsmParallelPlan | null, sections: Section[], maxAttempts: number, config: TnsConfig): FsmParallelPlanItem[] {
   const planned = new Set((plan?.batches ?? []).flatMap((batch) => batch.states.map((item) => item.state)));
-  const maxThreads = Math.max(1, Math.min(2, Number(plan?.max_threads ?? config.threads ?? config.thread ?? 1)));
+  const maxThreads = Math.max(1, Number(plan?.max_threads ?? config.threads ?? config.thread ?? 1));
   if (maxThreads <= 1) return [];
   return sections
     .map(ensureSectionDefaults)
@@ -1247,7 +1247,7 @@ async function runParallelBatchIfReady(
   const fallback = runnable.length > 1 ? [] : selectUnplannedParallelBatch(plan, sections, maxAttempts, config);
   const selectedRunnable = runnable.length > 1 ? runnable : fallback;
   if (selectedRunnable.length <= 1) return null;
-  const maxThreads = Math.max(1, Math.min(2, Number(plan?.max_threads ?? config.threads ?? config.thread ?? selectedRunnable.length)));
+  const maxThreads = Math.max(1, Number(plan?.max_threads ?? config.threads ?? config.thread ?? selectedRunnable.length));
 
   const wf = workflowSettings(config);
   const approvals = await loadApprovals(paths);
@@ -1873,7 +1873,7 @@ Rules:
 - Stay inside the workspace root. Do not intentionally access files outside ${paths.workspace}.
 - If you find explicit, concrete new requirements that should become additional tracked work, create ${taskxFilename} in the workspace using markdown sections.
 - Any ${taskxFilename} work must be concretely deliverable: include expected files/artifacts, acceptance criteria, and verification commands or checks.
-- When one backlog cycle lists multiple independent deliverables, create one ## section per deliverable so a 2-thread run can execute the branch concurrently.
+- When one backlog cycle lists multiple independent deliverables, create one ## section per deliverable so a multi-thread run can execute the branch concurrently.
 - Keep ${taskxFilename} as an exploration branch. Do not rewrite the primary task document.
 - If the workspace contains a branch control artifact such as task-delivery/xmode-control.json with cycles and deliverable paths, treat it as an exploration backlog, not as completed work. Inspect the listed deliverable paths on disk. When any deliverable for a cycle is missing, create ${taskxFilename} for the earliest missing cycle only.
 - Only create ${taskxFilename} when the follow-up work is materially useful, clearly actionable, and not already covered by completed sections.

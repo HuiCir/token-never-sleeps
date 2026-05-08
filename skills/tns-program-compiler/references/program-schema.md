@@ -81,7 +81,7 @@ or `program.threads`.
 
 - `enabled`: whether automatic batching found useful concurrency
 - `mode`: `off` or `auto`
-- `max_threads`: bounded thread count, currently capped at 2 for heavy Claude work
+- `max_threads`: bounded thread count; the runner follows the configured value
 - `batches`: task states that may be run by a coordinator in parallel
 - `controls`: FSM thread-control operations for conditional cooperation
 

@@ -63,9 +63,7 @@ function defaultSourcePaths(config: TnsConfig): SkillbaseSourceSettings[] {
   return [
     { id: "workspace-claude-skills", path: config.workspace ? `${config.workspace}/.claude/skills` : "./.claude/skills", kind: "skills_dir", priority: 30 },
     { id: "agents-skills", path: "~/.agents/skills", kind: "skills_dir", priority: 100 },
-    { id: "codex-user-skills", path: "~/.codex/skills", kind: "skills_dir", priority: 110 },
     { id: "claude-user-skills", path: "~/.claude/skills", kind: "skills_dir", priority: 120 },
-    { id: "codex-plugin-library", path: "~/.codex/.tmp/plugins", kind: "plugin", priority: 200 },
     { id: "claude-plugin-library", path: "~/.claude/plugins", kind: "plugin", priority: 210 },
   ];
 }

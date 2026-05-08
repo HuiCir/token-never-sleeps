@@ -1,10 +1,12 @@
 import { execa } from "execa";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getEffectivePermissionMode, monitorSettings } from "../lib/config.js";
+import { agentProviderSettings, getEffectivePermissionMode, monitorSettings } from "../lib/config.js";
 import { makeAgentError } from "../lib/errors.js";
 import { appendJsonl, writeJson } from "../lib/fs.js";
-import type { StatePaths, TnsConfig, ExecutorResult, VerifierResult, ExplorationResult, CompilerResult, AgentOutput, AgentUsage, ToolUseEvent } from "../types.js";
+import type { StatePaths, TnsConfig, ExecutorResult, VerifierResult, ExplorationResult, CompilerResult, AgentOutput, AgentUsage, ToolUseEvent, AgentProviderName } from "../types.js";
 import which from "which";
 const whichSync = which.sync;
 
@@ -44,6 +46,14 @@ interface RunAgentOptions {
     injection_profile?: string | null;
     injected_skills?: string[];
   };
+}
+
+interface AgentInvocation {
+  provider: AgentProviderName;
+  args: string[];
+  prompt: string;
+  cleanup?: () => Promise<void>;
+  parseOutput: (proc: { stdout: string; stderr: string }) => Promise<Record<string, unknown>>;
 }
 
 export const EXECUTOR_SCHEMA = {
@@ -249,10 +259,19 @@ function validatePayloadSchema(payload: unknown, schema: Record<string, unknown>
   return errors;
 }
 
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+function requireCommand(command: string, label: string): string {
+  if (command.includes("/") || command.includes("\\")) {
+    return command;
+  }
+  const resolved = whichSync(command, { nothrow: true });
+  if (!resolved) throw new Error(`${label} CLI not found in PATH`);
+  return resolved;
+}
+
 function requireClaude(): string {
-  const claude = whichSync("claude");
-  if (!claude) throw new Error("claude CLI not found in PATH");
-  return claude;
+  return requireCommand("claude", "claude");
 }
 
 export function buildCommonClaudeArgs(
@@ -267,8 +286,9 @@ export function buildCommonClaudeArgs(
   extraAddDirs?: string[],
   claudeOptions?: RunAgentOptions["claude"]
 ): string[] {
-  const claude = requireClaude();
-  const pluginRoot = pluginDirOverride || resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+  const provider = agentProviderSettings(config);
+  const claude = provider.name === "claude" ? requireCommand(provider.command || "claude", "claude") : requireClaude();
+  const pluginRoot = pluginDirOverride || PACKAGE_ROOT;
   const permissionMode = getEffectivePermissionMode(permissions?.permission_mode ?? config.permission_mode ?? "default");
   const addDirs = Array.from(new Set([resolve(workspace), pluginRoot, ...(extraAddDirs ?? []).map((item) => resolve(item))]));
   const args: string[] = [
@@ -313,6 +333,169 @@ export function buildCommonClaudeArgs(
   return args;
 }
 
+function codexSandboxForPermission(mode: string): "read-only" | "workspace-write" | "danger-full-access" {
+  if (mode === "bypassPermissions") {
+    return "danger-full-access";
+  }
+  return "workspace-write";
+}
+
+function codexApprovalForPermission(_mode: string): "never" {
+  return "never";
+}
+
+async function readAgentDefinition(pluginRoot: string, agent: string): Promise<string | null> {
+  try {
+    return await readFile(resolve(pluginRoot, "agents", `${agent}.md`), "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+function codexPrompt(agent: string, agentDefinition: string | null, schema: Record<string, unknown>, prompt: string): string {
+  const definition = agentDefinition
+    ? `Agent profile: ${agent}\n\n${agentDefinition}\n\n`
+    : `Agent profile: ${agent}\n\nNo local agent profile file was found for this name. Follow the task prompt and schema exactly.\n\n`;
+  return `${definition}Return one JSON object that strictly matches this JSON Schema. Do not wrap it in markdown and do not include prose outside the object.\n\nJSON Schema:\n${JSON.stringify(schema, null, 2)}\n\nTask prompt:\n${prompt}`;
+}
+
+function parseJsonlEvents(text: string): Record<string, unknown>[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    })
+    .filter((item): item is Record<string, unknown> => Boolean(item));
+}
+
+async function buildCodexInvocation(
+  config: TnsConfig,
+  workspace: string,
+  agent: string,
+  schema: Record<string, unknown>,
+  prompt: string,
+  options?: RunAgentOptions
+): Promise<AgentInvocation> {
+  const provider = agentProviderSettings(config);
+  const codex = requireCommand(provider.command || "codex", "codex");
+  const tempDir = await mkdtemp(resolve(tmpdir(), "tns-codex-"));
+  const schemaPath = resolve(tempDir, "schema.json");
+  const outputPath = resolve(tempDir, "last-message.json");
+  await writeFile(schemaPath, JSON.stringify(schema, null, 2), "utf-8");
+
+  const pluginRoot = options?.plugin_dir || PACKAGE_ROOT;
+  const permissionMode = getEffectivePermissionMode(options?.permissions?.permission_mode ?? config.permission_mode ?? "default");
+  const codexSettings = provider.codex ?? {};
+  const args = [
+    codex,
+    "exec",
+    "--cd",
+    workspace,
+    "--output-schema",
+    schemaPath,
+    "--output-last-message",
+    outputPath,
+    "--color",
+    "never",
+  ];
+
+  if (provider.model) {
+    args.push("--model", provider.model);
+  }
+  if (provider.profile) {
+    args.push("--profile", provider.profile);
+  }
+  if (codexSettings.bypass_approvals_and_sandbox || permissionMode === "bypassPermissions") {
+    args.push("--dangerously-bypass-approvals-and-sandbox");
+  } else {
+    args.push("--sandbox", codexSettings.sandbox ?? codexSandboxForPermission(permissionMode));
+    args.push("--ask-for-approval", codexSettings.approval_policy ?? codexApprovalForPermission(permissionMode));
+  }
+  if (codexSettings.ephemeral ?? true) {
+    args.push("--ephemeral");
+  }
+  if (codexSettings.ignore_user_config) {
+    args.push("--ignore-user-config");
+  }
+  if (codexSettings.ignore_rules) {
+    args.push("--ignore-rules");
+  }
+  if (codexSettings.json_events ?? true) {
+    args.push("--json");
+  }
+  for (const dir of Array.from(new Set([pluginRoot, ...(options?.extra_add_dirs ?? [])]))) {
+    args.push("--add-dir", resolve(dir));
+  }
+  args.push(...provider.extra_args);
+
+  const fullPrompt = codexPrompt(agent, await readAgentDefinition(pluginRoot, agent), schema, prompt);
+  args.push(fullPrompt);
+
+  return {
+    provider: "codex",
+    args,
+    prompt: fullPrompt,
+    cleanup: async () => {
+      await rm(tempDir, { recursive: true, force: true });
+    },
+    parseOutput: async (proc) => {
+      let result = "";
+      try {
+        result = await readFile(outputPath, "utf-8");
+      } catch {
+        result = proc.stdout.trim();
+      }
+      return {
+        result,
+        structured_output: (() => {
+          try {
+            return JSON.parse(result) as Record<string, unknown>;
+          } catch {
+            return undefined;
+          }
+        })(),
+        events: parseJsonlEvents(proc.stdout),
+        stderr: proc.stderr,
+        provider: "codex",
+      };
+    },
+  };
+}
+
+async function buildAgentInvocation(
+  config: TnsConfig,
+  workspace: string,
+  agent: string,
+  schema: Record<string, unknown>,
+  prompt: string,
+  options?: RunAgentOptions
+): Promise<AgentInvocation> {
+  const provider = agentProviderSettings(config);
+  if (provider.name === "codex") {
+    return buildCodexInvocation(config, workspace, agent, schema, prompt, options);
+  }
+  const args = buildCommonClaudeArgs(config, workspace, options?.permissions, options?.plugin_dir, options?.extra_add_dirs, options?.claude);
+  args.push("--agent", agent, "--json-schema", JSON.stringify(schema), prompt);
+  return {
+    provider: "claude",
+    args,
+    prompt,
+    parseOutput: async (proc) => {
+      try {
+        return JSON.parse(proc.stdout || "{}") as Record<string, unknown>;
+      } catch {
+        throw new Error(`[${agent}] returned invalid Claude JSON: ${(proc.stdout || "").slice(0, 400)}`);
+      }
+    },
+  };
+}
+
 function extractToolUseEvents(input: unknown, acc: Array<Record<string, unknown>> = []): Array<Record<string, unknown>> {
   if (Array.isArray(input)) {
     for (const item of input) {
@@ -343,7 +526,7 @@ function extractPermissionDenials(input: unknown): Array<Record<string, unknown>
     : [];
 }
 
-async function persistAgentRun(paths: StatePaths, metadata: RunAgentOptions["metadata"], outer: Record<string, unknown>, agent: string, prompt: string, args: string[]): Promise<void> {
+async function persistAgentRun(paths: StatePaths, metadata: RunAgentOptions["metadata"], outer: Record<string, unknown>, agent: string, provider: AgentProviderName, prompt: string, args: string[]): Promise<void> {
   const runId = metadata?.run_id || `${Date.now()}-${agent}`;
   await writeJson(`${paths.agent_runs_dir}/${runId}.json`, {
     run_id: runId,
@@ -354,7 +537,9 @@ async function persistAgentRun(paths: StatePaths, metadata: RunAgentOptions["met
     step: metadata?.step ?? "",
     injection_profile: metadata?.injection_profile ?? null,
     injected_skills: metadata?.injected_skills ?? [],
+    provider,
     claude_args: args.slice(1),
+    agent_args: args.slice(1),
     prompt,
     raw: outer,
   });
@@ -399,8 +584,8 @@ export async function runAgent(
   prompt: string,
   options?: RunAgentOptions
 ): Promise<AgentOutput> {
-  const args = buildCommonClaudeArgs(config, workspace, options?.permissions, options?.plugin_dir, options?.extra_add_dirs, options?.claude);
-  args.push("--agent", agent, "--json-schema", JSON.stringify(schema), prompt);
+  const invocation = await buildAgentInvocation(config, workspace, agent, schema, prompt, options);
+  const args = invocation.args;
   const monitor = monitorSettings(config);
   const heartbeatMs = monitor.heartbeat_seconds * 1000;
   const timeoutMs = options?.timeout_ms ?? (monitor.max_agent_runtime_seconds > 0
@@ -460,26 +645,37 @@ export async function runAgent(
     }
   } catch (err: unknown) {
     const e = err as { stderr?: string; stdout?: string };
+    if (invocation.cleanup) {
+      await invocation.cleanup();
+    }
     throw makeAgentError(agent, { stderr: e.stderr || "", stdout: e.stdout || "" });
   }
 
   if (timedOut) {
+    if (invocation.cleanup) {
+      await invocation.cleanup();
+    }
     throw new Error(timeoutMessage);
   }
 
   if (proc.exitCode !== 0) {
+    if (invocation.cleanup) {
+      await invocation.cleanup();
+    }
     throw makeAgentError(agent, { stderr: proc.stderr || "", stdout: proc.stdout || "" });
   }
 
   let outer: Record<string, unknown>;
   try {
-    outer = JSON.parse(proc.stdout || "{}");
-  } catch {
-    throw new Error(`[${agent}] returned invalid Claude JSON: ${(proc.stdout || "").slice(0, 400)}`);
+    outer = await invocation.parseOutput({ stdout: proc.stdout || "", stderr: proc.stderr || "" });
+  } finally {
+    if (invocation.cleanup) {
+      await invocation.cleanup();
+    }
   }
 
   if (options?.paths) {
-    await persistAgentRun(options.paths, options.metadata, outer, agent, prompt, args);
+    await persistAgentRun(options.paths, options.metadata, outer, agent, invocation.provider, invocation.prompt, args);
   }
 
   if (outer.is_error) {
@@ -521,14 +717,42 @@ export async function normalizeSchemaResult(
   schema: Record<string, unknown>,
   text: string
 ): Promise<Record<string, unknown>> {
+  const prompt = `Convert the following text into a JSON object that strictly matches the provided schema. Preserve uncertainty honestly. Return only JSON.\n\nTEXT:\n${text}`;
+  const provider = agentProviderSettings(config);
+  if (provider.name === "codex") {
+    const invocation = await buildCodexInvocation(config, workspace, "tns-schema-normalizer", schema, prompt);
+    let proc: { exitCode: number; stderr: string; stdout: string };
+    try {
+      proc = await execa(invocation.args[0], invocation.args.slice(1), {
+        cwd: workspace,
+        encoding: "utf8",
+        captureOutput: true,
+        timeout: DEFAULT_AGENT_TIMEOUT_MS,
+        reject: false,
+      }) as { exitCode: number; stderr: string; stdout: string };
+    } catch (err: unknown) {
+      const e = err as { stderr?: string; stdout?: string };
+      await invocation.cleanup?.();
+      throw new Error(`schema normalization failed: ${e.stderr || e.stdout || ""}`);
+    }
+    if (proc.exitCode !== 0) {
+      await invocation.cleanup?.();
+      throw new Error(`schema normalization failed: ${proc.stderr || proc.stdout}`);
+    }
+    try {
+      const outer = await invocation.parseOutput(proc);
+      const structured = outer.structured_output;
+      if (structured && typeof structured === "object" && !Array.isArray(structured)) {
+        return structured as Record<string, unknown>;
+      }
+      return JSON.parse(String(outer.result ?? "{}")) as Record<string, unknown>;
+    } finally {
+      await invocation.cleanup?.();
+    }
+  }
+
   const args = buildCommonClaudeArgs(config, workspace);
-  args.push(
-    "--effort",
-    "low",
-    "--json-schema",
-    JSON.stringify(schema),
-    `Convert the following text into a JSON object that strictly matches the provided schema. Preserve uncertainty honestly. Return only JSON.\n\nTEXT:\n${text}`
-  );
+  args.push("--effort", "low", "--json-schema", JSON.stringify(schema), prompt);
 
   let proc: { exitCode: number; stderr: string; stdout: string };
   try {

@@ -240,7 +240,7 @@ Defaults:
     sources
 
   thread is optional:
-    Top-level user switch. Set thread: 2 to request bounded parallel planning
+    Top-level user switch. Set thread above 1 to request bounded parallel planning
     when program.threads is not set.
 
   program is optional:
@@ -330,8 +330,8 @@ With explicit sources:
 
 Config:
   skillbases.use_default_sources defaults to true.
-  Defaults include workspace .claude/skills, ~/.agents/skills, ~/.codex/skills,
-  ~/.claude/skills, ~/.codex/.tmp/plugins, and ~/.claude/plugins.
+  Defaults include workspace .claude/skills, ~/.agents/skills,
+  ~/.claude/skills, and ~/.claude/plugins.
   skillbases.sources accepts multiple user plugin libraries, extracted
   skillbases, or direct skills directories.
 
@@ -589,7 +589,7 @@ Behavior:
 Branch backlog:
   If task-delivery/xmode-control.json contains ordered cycles with deliverable
   paths, each round targets the earliest cycle with missing deliverables only.
-  This lets a 2-thread runner execute that branch before the next xmode round.
+  This lets a multi-thread runner execute that branch before the next xmode round.
 
 Guards:
   - default is disabled

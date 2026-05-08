@@ -401,7 +401,7 @@ async function initSiblingWorkspace(defaultConfig: TnsConfig, parent: string, bo
     throw new Error(`workspace already exists: ${workspace}`);
   }
   const threadRaw = Number(body.thread ?? body.threads ?? 1);
-  const thread = Number.isFinite(threadRaw) ? Math.max(1, Math.min(8, Math.floor(threadRaw))) : 1;
+  const thread = Number.isFinite(threadRaw) ? Math.max(1, Math.floor(threadRaw)) : 1;
   const template = body.template === "novel-writing" ? "novel-writing" : "blank";
   const runner = body.runner === "tmux" || body.runner === "auto" ? body.runner : "direct";
   const taskText = typeof body.task === "string" ? body.task : typeof body.task_text === "string" ? body.task_text : undefined;
