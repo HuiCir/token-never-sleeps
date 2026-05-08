@@ -13,8 +13,8 @@ import { withResourceLocks } from "../lib/lock.js";
 import { beginRuntime, endRuntime, heartbeatRuntime, recoverRuntimeIfInterrupted } from "../core/runtime.js";
 import { currentWindow } from "../lib/time.js";
 import { loadApprovals, recordApprovalRequest } from "../core/approvals.js";
-import { missingApprovalTag, permissionSettings, resolvePermissionProfile, type ResolvedPermissionProfile } from "../lib/permissions.js";
-import { basename, relative, resolve as resolvePath } from "node:path";
+import { assertFilesTouchedAllowed, missingApprovalTag, resolvePermissionProfile, type ResolvedPermissionProfile } from "../lib/permissions.js";
+import { basename } from "node:path";
 import { readFile } from "node:fs/promises";
 import { applyPolicyAction, policyActionFor } from "../lib/policy.js";
 import { runStageCommandHooks } from "../core/command-bridge.js";
@@ -79,6 +79,16 @@ Skill-use contract:
 - If no injected skill is relevant, leave skills_used empty and explain the verification or execution basis in checks_run.`;
 }
 
+function permissionScopeInstruction(paths: ReturnType<typeof statePaths>, profile: ResolvedPermissionProfile): string {
+  if (profile.path_scope === "global") {
+    return `You may access paths outside ${paths.workspace} when the task or configured dependencies require it. Do not edit .tns state files; they are owned by the runner. If progress would require a command family outside the current permission profile, stop and report the missing command family as a blocker instead of guessing.`;
+  }
+  if (profile.path_scope === "workspace_whitelist") {
+    return `Stay inside the workspace root except for the listed allowed roots. Allowed roots are: ${profile.access_roots.join(", ")}. Do not edit .tns state files; they are owned by the runner. If progress would require a path or command family outside the current permission profile, stop and report it as a blocker instead of guessing.`;
+  }
+  return `Stay inside the workspace root. Do not intentionally access files outside ${paths.workspace}. Do not edit .tns state files; they are owned by the runner. If progress would require a command family outside the current permission profile, stop and report the missing command family as a blocker instead of guessing.`;
+}
+
 function configForAgentMode(config: TnsConfig, mode: ResolvedInjectionProfile["mode"]): TnsConfig {
   const execution = executionSettings(config);
   const classSettings = mode === "verifier"
@@ -129,20 +139,6 @@ async function persistSectionOutputIfEnabled(
     validatorResults,
     commandRuns
   );
-}
-
-function ensureFilesTouchedStayInWorkspace(workspace: string, filesTouched: string[]): void {
-  const root = resolvePath(workspace);
-  for (const file of filesTouched) {
-    const resolved = resolvePath(root, file);
-    const rel = relative(root, resolved);
-    if (rel !== "" && (rel.startsWith("..") || rel.includes("/../") || rel === "..")) {
-      throw new Error(`files_touched contains path outside workspace: ${file}`);
-    }
-    if (rel === ".tns" || rel.startsWith(".tns/")) {
-      throw new Error(`files_touched contains protected TNS state path: ${file}`);
-    }
-  }
 }
 
 async function configWithCompiledProgram(config: TnsConfig, paths: ReturnType<typeof statePaths>): Promise<TnsConfig> {
@@ -411,26 +407,18 @@ function nextSectionId(existing: Section[]): string {
 }
 
 function resolveDefaultPermissionProfile(config: TnsConfig): ResolvedPermissionProfile {
-  const settings = permissionSettings(config);
-  const profileName = settings.default_profile;
-  const profile = settings.profiles[profileName] || {};
-  const allowed = [
-    ...(profile.allowed_tools ?? []),
-    ...((profile.allowed_bash_commands ?? []).map((cmd) => cmd.startsWith("Bash(") ? cmd : `Bash(${cmd}:*)`)),
-  ];
-  const disallowed = [
-    ...(profile.disallowed_tools ?? []),
-    ...((profile.disallowed_bash_commands ?? []).map((cmd) => cmd.startsWith("Bash(") ? cmd : `Bash(${cmd}:*)`)),
-  ];
-  return {
-    profile_name: profileName,
-    permission_mode: profile.permission_mode ?? config.permission_mode ?? "acceptEdits",
-    allowed_tools: Array.from(new Set(allowed)),
-    disallowed_tools: Array.from(new Set(disallowed)),
-    approval_tag: profile.requires_approval ?? null,
-    workspace_only: profile.workspace_only ?? true,
-    restricted_paths: Array.isArray(profile.restricted_paths) ? profile.restricted_paths.map(String) : [],
-  };
+  return resolvePermissionProfile(config, {
+    id: "exploration",
+    title: "Exploration",
+    anchor: "exploration",
+    body: "",
+    status: "pending",
+    attempts: 0,
+    verified_at: null,
+    last_summary: "",
+    last_review: "",
+    current_step: "exploration",
+  }, "exploration");
 }
 
 async function importTaskxSections(paths: ReturnType<typeof statePaths>, taskxPath: string): Promise<number> {
@@ -711,6 +699,7 @@ async function runExplorationPass(config: TnsConfig, paths: ReturnType<typeof st
         permission_mode: permissionProfile.permission_mode,
         allowed_tools: permissionProfile.allowed_tools,
         disallowed_tools: permissionProfile.disallowed_tools,
+        access_roots: permissionProfile.access_roots,
       },
     });
     result = agentResult.payload as unknown as ExplorationResult;
@@ -732,7 +721,7 @@ async function runExplorationPass(config: TnsConfig, paths: ReturnType<typeof st
     await gcPluginSandbox(paths, runId, pluginSandbox.plugin_root);
   }
 
-  ensureFilesTouchedStayInWorkspace(paths.workspace, result.files_touched || []);
+  assertFilesTouchedAllowed(paths.workspace, result.files_touched || [], permissionProfile);
   appendHandoff(paths.handoff, "Exploration", result as unknown as Record<string, unknown>, "exploration");
   await appendJsonl(paths.activity, {
     event: "exploration_end",
@@ -1100,6 +1089,7 @@ async function executeParallelSectionWorkflow(
             permission_mode: permissionProfile.permission_mode,
             allowed_tools: permissionProfile.allowed_tools,
             disallowed_tools: permissionProfile.disallowed_tools,
+            access_roots: permissionProfile.access_roots,
           },
         });
         result = { payload: agentResult.payload as unknown as Record<string, unknown>, usage: agentResult.usage as unknown as Record<string, unknown> };
@@ -1133,7 +1123,7 @@ async function executeParallelSectionWorkflow(
 
       const { payload, usage } = result;
       const filesTouched = Array.isArray(payload.files_touched) ? payload.files_touched.filter((item): item is string => typeof item === "string") : [];
-      ensureFilesTouchedStayInWorkspace(paths.workspace, filesTouched);
+      assertFilesTouchedAllowed(paths.workspace, filesTouched, permissionProfile);
       priorResults[currentStep] = payload;
       stepResults.push({ node_id: currentStep, payload, usage });
       appendHandoff(paths.handoff, currentStep.charAt(0).toUpperCase() + currentStep.slice(1), payload, selected.id);
@@ -1564,6 +1554,7 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
             permission_mode: permissionProfile.permission_mode,
             allowed_tools: permissionProfile.allowed_tools,
             disallowed_tools: permissionProfile.disallowed_tools,
+            access_roots: permissionProfile.access_roots,
           },
         });
         result = { payload: agentResult.payload as unknown as Record<string, unknown>, usage: agentResult.usage as unknown as Record<string, unknown> };
@@ -1610,7 +1601,7 @@ async function runOnce(config: TnsConfig, paths: ReturnType<typeof statePaths>):
         ? payload.files_touched.filter((item): item is string => typeof item === "string")
         : [];
       try {
-        ensureFilesTouchedStayInWorkspace(paths.workspace, filesTouched);
+        assertFilesTouchedAllowed(paths.workspace, filesTouched, permissionProfile);
       } catch (error: unknown) {
         const outcome = await applyPolicyAction(
           paths,
@@ -1804,13 +1795,14 @@ Target section:
 Permission profile:
 - profile: ${permissionProfile.profile_name}
 - mode: ${permissionProfile.permission_mode}
+- path_scope: ${permissionProfile.path_scope}
+- allowed_roots: ${permissionProfile.access_roots.join(", ") || paths.workspace}
 - workspace_only: ${permissionProfile.workspace_only ? "true" : "false"}
-- restricted_paths: ${permissionProfile.restricted_paths.join(", ") || paths.workspace}
 - auto-approved tools: ${permissionProfile.allowed_tools.join(", ") || "(none)"}
 
 ${injectionPromptBlock(injectionProfile)}
 
-Stay inside the workspace root. Do not intentionally access files outside ${paths.workspace}. Do not edit .tns state files; they are owned by the runner. If progress would require a command family outside the current permission profile, stop and report the missing command family as a blocker instead of guessing.
+${permissionScopeInstruction(paths, permissionProfile)}
 `;
 
   if (node.prompt_mode === "executor") {
@@ -1861,8 +1853,9 @@ ${completed || "- none"}
 Permission profile:
 - profile: ${permissionProfile.profile_name}
 - mode: ${permissionProfile.permission_mode}
+- path_scope: ${permissionProfile.path_scope}
+- allowed_roots: ${permissionProfile.access_roots.join(", ") || paths.workspace}
 - workspace_only: ${permissionProfile.workspace_only ? "true" : "false"}
-- restricted_paths: ${permissionProfile.restricted_paths.join(", ") || paths.workspace}
 - auto-approved tools: ${permissionProfile.allowed_tools.join(", ") || "(none)"}
 
 ${injectionPromptBlock(injectionProfile)}
@@ -1870,7 +1863,7 @@ ${injectionPromptBlock(injectionProfile)}
 Rules:
 - Default to conservative refinement. Only change files when the improvement is concrete and justified.
 - Do not reopen vague or speculative work.
-- Stay inside the workspace root. Do not intentionally access files outside ${paths.workspace}.
+- ${permissionScopeInstruction(paths, permissionProfile)}
 - If you find explicit, concrete new requirements that should become additional tracked work, create ${taskxFilename} in the workspace using markdown sections.
 - Any ${taskxFilename} work must be concretely deliverable: include expected files/artifacts, acceptance criteria, and verification commands or checks.
 - When one backlog cycle lists multiple independent deliverables, create one ## section per deliverable so a multi-thread run can execute the branch concurrently.

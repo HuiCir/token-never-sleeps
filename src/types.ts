@@ -112,6 +112,9 @@ export interface PermissionProfile {
   allowed_bash_commands?: string[];
   disallowed_bash_commands?: string[];
   requires_approval?: string | null;
+  path_scope?: "workspace" | "global" | "globe" | "workspace_whitelist" | "workspace+whitelist";
+  allowed_paths?: string[];
+  whitelist_paths?: string[];
   workspace_only?: boolean;
   restricted_paths?: string[];
 }

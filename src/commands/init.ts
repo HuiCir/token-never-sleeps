@@ -75,7 +75,7 @@ function defaultPermissions(permissionMode: string): PermissionSettings {
       standard: {
         permission_mode: permissionMode,
         allowed_bash_commands: ["pwd", "ls", "cat", "sed", "rg", "find", "git", "node"],
-        workspace_only: true,
+        path_scope: "workspace",
       },
     },
     section_profiles: [],

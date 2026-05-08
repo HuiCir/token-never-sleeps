@@ -618,13 +618,20 @@ Config shape:
       "standard": {
         "permission_mode": "acceptEdits",
         "allowed_bash_commands": ["pwd", "ls", "cat", "sed", "rg", "find", "git", "node"],
-        "workspace_only": true
+        "path_scope": "workspace"
       },
       "restricted_step": {
         "permission_mode": "acceptEdits",
         "allowed_bash_commands": ["pwd", "ls", "cat", "sed", "rg", "find", "node"],
         "requires_approval": "restricted-step",
-        "workspace_only": true
+        "path_scope": "workspace_whitelist",
+        "allowed_paths": ["/opt/shared-data", "~/shared-tools"]
+      },
+      "global_audit": {
+        "permission_mode": "acceptEdits",
+        "allowed_bash_commands": ["pwd", "ls", "cat", "sed", "rg", "find", "node"],
+        "requires_approval": "global-audit",
+        "path_scope": "global"
       }
     },
     "section_profiles": [
@@ -646,13 +653,18 @@ Read-only inspection:
 Approval state is stored in:
   .tns/approvals.json
 
-TNS also audits executor-reported files_touched and rejects paths outside the
-configured workspace.
+Path scopes:
+  - workspace: agent access and files_touched audit stay inside the workspace.
+  - workspace_whitelist: workspace plus allowed_paths / whitelist_paths.
+  - global: no path root restriction after approval; .tns state remains protected.
+
+TNS passes the resolved access roots to the agent runtime and audits
+executor-reported files_touched against the same permission profile.
 
 Operational notes:
   - approve clears matching approval_required freezes.
   - revoke does not stop an already running process; it affects later runs.
-  - workspace_only is a policy and audit signal, not a kernel sandbox.
+  - workspace_only is still accepted for older configs; path_scope is preferred.
 `,
   status: `
 TNS status and monitoring

@@ -36,8 +36,8 @@ The compiled program must contain or imply all of these:
 - section graph from `task.md`
 - bridge files: handoff, sections, reviews, activity, artifacts, approvals, runtime, diagnostics
 - lifecycle: refresh window, runtime heartbeat, watchdog, tmux/direct mode, exploration mode
-- workspace boundary rules
-- permission profiles and approval tags
+- path-scope rules: `workspace`, `workspace_whitelist`, or `global`
+- permission profiles, allowed paths, and approval tags
 - validators by stage
 - runner-side command hooks and command sets
 - explicit FSM program when branching or looping behavior matters

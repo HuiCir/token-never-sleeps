@@ -65,7 +65,7 @@ Paths to state-bearing files that move information between runs:
 ## orchestration
 
 - workflow graph
-- permission profiles
+- permission profiles with path scopes (`workspace`, `workspace_whitelist`, `global`)
 - validators
 - command bridge
 - policy

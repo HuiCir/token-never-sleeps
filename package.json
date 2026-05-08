@@ -20,7 +20,7 @@
     "build": "tsc -p tsconfig.json && chmod +x dist/index.js",
     "prepack": "npm run build",
     "smoke": "node dist/index.js help",
-    "test": "npm run build && node scripts/dashboard-auth-smoke.mjs"
+    "test": "npm run build && node scripts/dashboard-auth-smoke.mjs && node scripts/permission-scope-smoke.mjs"
   },
   "keywords": [
     "claude",

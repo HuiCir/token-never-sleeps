@@ -469,7 +469,9 @@ Key points:
 - safe command families are passed through Claude `--allowedTools`
 - escalated profiles can require an approval tag such as `restricted-step`
 - missing approvals freeze the workspace and create `.tns/approvals.json`
-- executor `files_touched` are audited and rejected if they point outside the workspace or into protected `.tns` runner state
+- path scope can be `workspace`, `workspace_whitelist`, or `global`
+- `workspace_whitelist` combines the workspace with explicit `allowed_paths`
+- executor `files_touched` are audited against the resolved path scope; protected `.tns` runner state remains blocked
 
 See also:
 

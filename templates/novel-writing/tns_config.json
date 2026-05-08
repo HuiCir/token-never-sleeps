@@ -10,7 +10,7 @@
       "standard": {
         "permission_mode": "acceptEdits",
         "allowed_bash_commands": ["pwd", "ls", "cat", "sed", "rg", "find", "git", "node"],
-        "workspace_only": true
+        "path_scope": "workspace"
       }
     },
     "section_profiles": []

@@ -26,6 +26,7 @@ interface RunAgentOptions {
     permission_mode?: string;
     allowed_tools?: string[];
     disallowed_tools?: string[];
+    access_roots?: string[];
   };
   claude?: {
     bare?: boolean;
@@ -281,6 +282,7 @@ export function buildCommonClaudeArgs(
     permission_mode?: string;
     allowed_tools?: string[];
     disallowed_tools?: string[];
+    access_roots?: string[];
   },
   pluginDirOverride?: string,
   extraAddDirs?: string[],
@@ -290,7 +292,12 @@ export function buildCommonClaudeArgs(
   const claude = provider.name === "claude" ? requireCommand(provider.command || "claude", "claude") : requireClaude();
   const pluginRoot = pluginDirOverride || PACKAGE_ROOT;
   const permissionMode = getEffectivePermissionMode(permissions?.permission_mode ?? config.permission_mode ?? "default");
-  const addDirs = Array.from(new Set([resolve(workspace), pluginRoot, ...(extraAddDirs ?? []).map((item) => resolve(item))]));
+  const addDirs = Array.from(new Set([
+    resolve(workspace),
+    pluginRoot,
+    ...(permissions?.access_roots ?? []).map((item) => resolve(item)),
+    ...(extraAddDirs ?? []).map((item) => resolve(item)),
+  ]));
   const args: string[] = [
     claude,
     "-p",
@@ -429,7 +436,7 @@ async function buildCodexInvocation(
   if (codexSettings.json_events ?? true) {
     args.push("--json");
   }
-  for (const dir of Array.from(new Set([pluginRoot, ...(options?.extra_add_dirs ?? [])]))) {
+  for (const dir of Array.from(new Set([pluginRoot, ...(options?.permissions?.access_roots ?? []), ...(options?.extra_add_dirs ?? [])]))) {
     args.push("--add-dir", resolve(dir));
   }
   args.push(...provider.extra_args);
