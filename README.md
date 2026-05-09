@@ -571,7 +571,7 @@ artifacts.
 
 | Repo | Description |
 |------|-------------|
-| [tns-noval](https://github.com/HuiCir/tns-noval) | Novel-writing workspace. 10-state FSM pipeline: world building → character profiles → 5-chapter draft with executor/verifier loops. Includes continuity checker (`check_novel.js`), dashboard monitoring, and story bible persistence. |
+| [tns-novel](https://github.com/HuiCir/tns-novel) | Novel-writing workspace. 10-state FSM pipeline: world building → character profiles → 5-chapter draft with executor/verifier loops. Includes continuity checker (`check_novel.js`), dashboard monitoring, and story bible persistence. |
 | [tns-design](https://github.com/HuiCir/tns-design) | Design swarm workspace. 4-thread parallel FSM with Open Design skillbase integration (63+ design skills, 139 brand design systems). Generates landing pages, dashboards, and pitch decks in parallel with executor/verifier loops. Includes example outputs and `verify_designs.js`. |
 | [tns-research](https://github.com/HuiCir/tns-research) | Deep-research workspace. 6-state fork-join FSM pipeline: provider configuration → parallel blog + arXiv collection → evidence normalization → Claude CLI report synthesis (20K+ chars) → HTML/visual report with inline SVGs. Includes DuckDuckGo + arXiv providers, Node worker_threads retrieval swarm, `tns-search-skill`, and `check_outputs.js` validator. |
 
