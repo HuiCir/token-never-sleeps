@@ -549,12 +549,59 @@ Use `tns btw` to inspect:
 
 ## Templates
 
-Available templates:
+### Built-in templates
 
-- `blank`
-- `novel-writing`
+- `blank` — empty workspace with a two-section placeholder `task.md`
+- `novel-writing` — five-chapter novel pipeline with story bible continuity tracking
 
-Templates live under `templates/` inside the package and are copied into the target workspace by `tns init`.
+Built-in templates live under `templates/` inside the package and are copied into
+the target workspace by `tns init`.
+
+```bash
+tns init --workspace ./my-task --template blank
+tns init --workspace ./novel-project --template novel-writing
+```
+
+### Community template workspaces
+
+These are standalone `tns-*` repositories. Each is a complete TNS workspace —
+clone, `tns init`, and run. They are not npm packages; they are reference
+workspaces with pre-configured FSM programs, skill injections, and domain
+artifacts.
+
+| Repo | Description |
+|------|-------------|
+| [tns-noval](https://github.com/HuiCir/tns-noval) | Novel-writing workspace. 10-state FSM pipeline: world building → character profiles → 5-chapter draft with executor/verifier loops. Includes continuity checker (`check_novel.js`), dashboard monitoring, and story bible persistence. |
+| [tns-design](https://github.com/HuiCir/tns-design) | Design swarm workspace. 4-thread parallel FSM with Open Design skillbase integration (63+ design skills, 139 brand design systems). Generates landing pages, dashboards, and pitch decks in parallel with executor/verifier loops. Includes example outputs and `verify_designs.js`. |
+
+Each repo follows the same workspace convention:
+
+```
+<tns-repo>/
+├── task.md              # Section definitions
+├── tns_config.json      # FSM program + skill injections + swarm config
+├── scripts/             # Validation / continuity scripts
+├── example/             # Output screenshots
+└── .gitignore           # Excludes .tns/ runtime state
+```
+
+Clone one and run:
+
+```bash
+git clone https://github.com/HuiCir/tns-design.git ./my-designs
+cd ./my-designs
+tns init --workspace "$PWD" --task task.md --runner direct
+tns compile --synthesize --apply
+tns run --once
+```
+
+To create your own community template workspace:
+
+1. Build a working TNS workspace with `task.md`, `tns_config.json`, and any
+   supporting scripts or reference files.
+2. Add `.tns/` to `.gitignore` (runtime state stays local).
+3. Push to a public repo with the `tns-` prefix.
+4. Open an issue or PR to add it to this section.
 
 ## Commands
 
