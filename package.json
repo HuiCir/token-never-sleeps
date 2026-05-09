@@ -1,6 +1,6 @@
 {
   "name": "token-never-sleeps",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Pure TypeScript distribution of the TNS external orchestration loop",
   "type": "module",
   "bin": {
